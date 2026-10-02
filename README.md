@@ -6,15 +6,19 @@ AI coding assistants (ZCode, Claude Code, Cursor, …) edit your notes fast, but
 
 Chinese UI documentation: [中文说明](#中文说明) · Interface language: Chinese / English (auto-detected, configurable).
 
-## This fork (0.9.0)
+## This fork (0.9.1)
 
-`larsharzem/ai-work-review`, forked from `zhouweijie/ai-work-review` 0.8.0. Two behaviour changes and one vocabulary switch:
+`larsharzem/ai-work-review`, forked from `zhouweijie/ai-work-review` 0.8.0. Three behaviour changes and one vocabulary switch:
 
 **1. A newly imported report supersedes an earlier "Approve".** The panel shows `userVerdict` as long as it is set and only falls back to the AI verdict. A `pass` from an earlier approval therefore used to hide every later report — and any proposal that came with it — under "Issues only" for good, so an external routine had to reach into `data.json` to clear it. Now the ingest does it: importing a report for a file whose `userVerdict` is `pass` clears that verdict and logs why. An **Adjust** verdict (`fail`) is kept — its note feeds the fix prompt.
 
-**2. A file with a proposal stays visible under "Issues only"**, whatever its verdict says. Rule checks only look at the file's own content, so a file can read `pass` while a full replacement is waiting in `.ai-review/proposals/`. Both rules are pinned by tests (`needsAttention` in `store.ts`, the supersede rule in `test/integration.mjs`).
+**2. A file with a proposal stays visible under "Issues only"**, whatever its verdict says. Rule checks only look at the file's own content, so a file can read `pass` while a full replacement is waiting in `.ai-review/proposals/`.
 
-**3. Every Chinese string that carries function is English now** — stored values, document vocabulary, folder and file names, regex defaults, default settings, sort locale. Only comments and the `zh` UI table in `src/i18n.ts` stay Chinese (plus a handful of regex classes that deliberately read both ASCII and full-width punctuation, e.g. `[:：]`).
+**3. A handled adjustment note clears itself.** "Adjust" records the verdict `fail` plus the note in `data.json` and writes the same note to `.ai-review/adjustments/<path>.json` for the AI. The AI takes that JSON away once it has worked the note in — the review routines move it to `.ai-review/adjustments-consumed/`, `/dev-review` deletes it — and never writes into the plugin's data, so the file used to sit on the `fail` verdict and the stale note until someone cleared it by hand. Every import run now looks at each pending note: once its JSON is gone, the verdict and the note go with it. A note whose JSON is still there is left alone, and so is one whose JSON cannot be read — a read error must not drop the author's note. The JSON's own timestamp has to match the logged `user-adjustment-requested` entry within 30 s, so a leftover from an older note cannot clear a newer one.
+
+All three are pinned by tests: `needsAttention` and `adjustmentHandled` in `src/store.ts`, the full round trip through `ingestBridge` in `test/integration.mjs`.
+
+**4. Every Chinese string that carries function is English now** — stored values, document vocabulary, folder and file names, regex defaults, default settings, sort locale. Only comments and the `zh` UI table in `src/i18n.ts` stay Chinese (plus a handful of regex classes that deliberately read both ASCII and full-width punctuation, e.g. `[:：]`).
 
 | Kind | upstream | this fork |
 | --- | --- | --- |

@@ -1,6 +1,6 @@
 import { MarkdownView, Notice, Plugin, TFile, getLanguage, normalizePath } from "obsidian";
 import { Issue, RuleCheckContext, TemplateSpec, StatusCheck, checkFile, extractTemplateSpec, isInScope, isTemplateLike } from "./rules";
-import { ReviewStore, StoreData, effectiveStatus, simpleHash } from "./store";
+import { ReviewStore, StoreData, adjustmentHandled, effectiveStatus, pendingAdjustmentStamp, simpleHash } from "./store";
 import { parseAiReport } from "./ingest";
 import { AiWorkReviewSettingTab, DEFAULT_SETTINGS, codeProjectDevSettings, needsCodeProjectLayout, parseList, parseStatusChecks, parseTemplateMap } from "./settings";
 import type { AiWorkReviewSettings } from "./settings";
@@ -345,10 +345,21 @@ export default class AiWorkReviewPlugin extends Plugin {
 			this.proposals.set(target, { abs });
 		}
 
-		if (imported > 0) await this.saveAll();
-		if (imported > 0 || verbose) {
-			new Notice(imported > 0 ? t("notice.imported", { n: imported }) : t("notice.noNewReports"));
+		// An adjustment note is worked in when its JSON has left adjustments/ — the review routines move
+		// it to adjustments-consumed/, /dev-review deletes it. Nothing writes back into the plugin's own
+		// data, so without this the file would keep its "Adjust" verdict and the stale note for good.
+		let handled = 0;
+		for (const path of Object.keys(this.store.data.files)) {
+			if (pendingAdjustmentStamp(this.store.data.files[path]) === undefined) continue;
+			if (!adjustmentHandled(this.store.data.files[path], await this.readAdjustmentBridge(path))) continue;
+			this.store.applyUserVerdict(path, undefined, undefined, "adjustment note worked in by the AI");
+			handled++;
 		}
+
+		if (imported > 0 || handled > 0) await this.saveAll();
+		if (imported > 0) new Notice(t("notice.imported", { n: imported }));
+		if (handled > 0) new Notice(t("notice.adjustmentsHandled", { n: handled }));
+		if (imported === 0 && handled === 0 && verbose) new Notice(t("notice.noNewReports"));
 		this.refreshView();
 	}
 
@@ -383,6 +394,19 @@ export default class AiWorkReviewPlugin extends Plugin {
 
 	bridgeAdjustPath(vaultPath: string): string {
 		return `${normalizePath(this.settings.bridgeFolder)}/adjustments/${vaultPath}.json`;
+	}
+
+	/** The adjustment JSON of a file: undefined when it is gone, `{}` when it is there but unreadable. */
+	private async readAdjustmentBridge(vaultPath: string): Promise<{ stamp?: number } | undefined> {
+		const rel = this.bridgeAdjustPath(vaultPath);
+		const adapter = this.app.vault.adapter;
+		try {
+			if (!(await adapter.exists(rel))) return undefined;
+			const stamp = Date.parse((JSON.parse(await adapter.read(rel)) as { timestamp?: string }).timestamp ?? "");
+			return Number.isNaN(stamp) ? {} : { stamp };
+		} catch {
+			return {}; // unreadable counts as present: a read error must not drop the author's note
+		}
 	}
 
 	private async ensureBridgeParent(rel: string): Promise<void> {

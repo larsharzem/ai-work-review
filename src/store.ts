@@ -80,6 +80,37 @@ export function needsAttention(fr: FileReview | undefined, hasProposal: boolean)
 	return hasProposal || effectiveStatus(fr).status !== "pass";
 }
 
+/** The time of the "Adjust" that is still waiting for the AI, or undefined when none is pending. */
+export function pendingAdjustmentStamp(fr: FileReview | undefined): number | undefined {
+	if (!fr || fr.userVerdict !== "fail" || !fr.userNote) return undefined;
+	for (let i = fr.history.length - 1; i >= 0; i--) {
+		if (fr.history[i].action === "user-adjustment-requested") return fr.history[i].t;
+	}
+	return undefined;
+}
+
+/**
+ * How far the bridge JSON's own timestamp may sit behind that history entry and still count as the
+ * same request. One action writes both, milliseconds apart, so this only has to absorb a slow
+ * write — and it errs in the harmless direction: a note that stays costs one click, a note cleared
+ * by mistake is gone.
+ */
+export const ADJUSTMENT_STAMP_TOLERANCE_MS = 30_000;
+
+/**
+ * Has the pending "Adjust" note been worked in? An adjustment note lives in two places: the verdict
+ * and note here, and a JSON under the bridge folder's adjustments/ that the AI reads. The AI takes
+ * that JSON away once it has worked the note in and never writes back here, so its absence is the
+ * only signal we get. `bridge` is that JSON: undefined when it is gone, `{}` when it is unreadable.
+ */
+export function adjustmentHandled(fr: FileReview | undefined, bridge: { stamp?: number } | undefined): boolean {
+	const stamp = pendingAdjustmentStamp(fr);
+	if (stamp === undefined) return false; // nothing pending
+	if (!bridge) return true; // the note's JSON is gone: the AI has taken it
+	if (bridge.stamp === undefined) return false; // unreadable: do not guess, keep the note
+	return bridge.stamp < stamp - ADJUSTMENT_STAMP_TOLERANCE_MS; // a leftover from an older note
+}
+
 export class ReviewStore {
 	data: StoreData = { version: 1, files: {} };
 

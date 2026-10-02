@@ -243,6 +243,27 @@ console.log("== integration: a proposal keeps a passing file visible ==");
 	await plugin.clearUserVerdict(TEST_MD);
 }
 
+console.log("== integration: an adjustment note the AI has worked in ==");
+{
+	// The routines take the JSON out of adjustments/ when they have worked the note in (moved to
+	// adjustments-consumed/ or deleted) and never touch the plugin's data — so the import run has
+	// to notice the absence itself, otherwise the file keeps its "Adjust" verdict and stale note.
+	await plugin.applyUserAdjustment(TEST_MD, "write the open task as next step");
+	assert(fs.existsSync(abs(ADJUSTMENT_PATH)), "the note is in adjustments/ for the AI");
+	await plugin.ingestBridge(false);
+	const pending = plugin.store.data.files[TEST_MD];
+	assert(pending.userVerdict === "fail" && pending.userNote === "write the open task as next step", "while the JSON is there, verdict and note stay");
+
+	fs.mkdirSync(abs(".ai-review/adjustments-consumed/characters"), { recursive: true });
+	fs.renameSync(abs(ADJUSTMENT_PATH), abs(".ai-review/adjustments-consumed/characters/__nr_test.md.done.json"));
+	await plugin.ingestBridge(false);
+	const done = plugin.store.data.files[TEST_MD];
+	assert(done.userVerdict === undefined && done.userNote === undefined, "the consumed note clears verdict and note");
+	assert(done.history.at(-1).action === "user-verdict-cleared" && done.history.at(-1).detail === "adjustment note worked in by the AI", "the clearing is logged with its reason");
+	await plugin.ingestBridge(false);
+	assert(done.history.at(-1).detail === "adjustment note worked in by the AI" && done.history.filter((h) => h.detail === "adjustment note worked in by the AI").length === 1, "the next run leaves it alone (one entry, not one per poll)");
+}
+
 console.log("== integration: apply the proposal ==");
 const applied = await plugin.applyProposal(TEST_MD);
 assert(applied === true, "applyProposal reports success");

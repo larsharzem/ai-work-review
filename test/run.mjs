@@ -13,7 +13,7 @@ import { checkFile, extractTemplateSpec, isInScope, isTemplateLike, matchingFold
 import { parseAiReport } from "../.test/ingest.mjs";
 import { diffLines, diffStats } from "../.test/diff.mjs";
 import { matchTasks, collectDevTasks, extractFieldValue, taskState, stripDatePrefix, shouldUseProjectDocsLayout, isNovelDefaultDevFolders, isUnderNamedFolder, targetFolderOf, setFieldValue, upsertSupplementSection, upsertBugSection, upsertChangeSection, hasPendingChange, countBugEntries, removeLatestSectionEntry, nowStamp, todayStamp, isBugFixReqStatus, isApprovedReqStatus, nextApproveStatus, canRecordRequirementChange, canRecordBug, devAuthorActions } from "../.test/dev.mjs";
-import { ReviewStore, effectiveStatus, needsAttention } from "../.test/store.mjs";
+import { ReviewStore, ADJUSTMENT_STAMP_TOLERANCE_MS, adjustmentHandled, effectiveStatus, needsAttention, pendingAdjustmentStamp } from "../.test/store.mjs";
 import { createFixtureVault } from "./fixture-vault.mjs";
 
 const fixture = createFixtureVault();
@@ -415,6 +415,29 @@ console.log("\n== 10. Store: verdicts, history vocabulary, Issues-only filter ==
 
 	const sorted = store.sortedPaths(["b.md", "a.md"]);
 	assert(sorted[0] === "a.md" && sorted[1] === "b.md", "sorting by path needs no locale");
+}
+
+console.log("\n== 11. Store: an adjustment note whose bridge JSON is gone ==");
+{
+	const store = new ReviewStore(null);
+	store.applyUserVerdict("a.md", "fail", "write the task for the 5th");
+	const fr = store.data.files["a.md"];
+	const stamp = pendingAdjustmentStamp(fr);
+	assert(stamp === fr.history.at(-1).t, "the pending stamp is the time of the last Adjust");
+
+	// The JSON is written one millisecond after the history entry, so the pair has to be tolerant
+	assert(adjustmentHandled(fr, { stamp: stamp + 1 }) === false, "the note stays while its JSON is there");
+	assert(adjustmentHandled(fr, undefined) === true, "the note counts as worked in once its JSON is gone");
+	assert(adjustmentHandled(fr, {}) === false, "an unreadable JSON keeps the note: no guessing");
+	assert(adjustmentHandled(fr, { stamp: stamp - ADJUSTMENT_STAMP_TOLERANCE_MS + 1 }) === false, "a JSON written just before the entry is the same request");
+	assert(adjustmentHandled(fr, { stamp: stamp - ADJUSTMENT_STAMP_TOLERANCE_MS - 1 }) === true, "a much older JSON is a leftover, not this request");
+
+	store.applyUserVerdict("b.md", "pass");
+	assert(pendingAdjustmentStamp(store.data.files["b.md"]) === undefined, "an Approve has no pending adjustment");
+	assert(adjustmentHandled(store.data.files["b.md"], undefined) === false, "a missing JSON never touches an Approve");
+	assert(pendingAdjustmentStamp(undefined) === undefined, "an unknown file has no pending adjustment");
+	// A "fail" from an older version that never wrote a history entry must not be cleared blindly
+	assert(adjustmentHandled({ path: "c.md", ruleStatus: "pass", ruleIssues: [], aiIssues: [], fixedCount: 0, history: [], userVerdict: "fail", userNote: "n" }, undefined) === false, "without a logged Adjust nothing is cleared");
 }
 
 console.log(failed === 0 ? "\nall assertions passed ✅" : `\n${failed} assertions failed ❌`);
