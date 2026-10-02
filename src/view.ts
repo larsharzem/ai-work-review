@@ -1,8 +1,26 @@
 import { App, ItemView, Notice, TFile, WorkspaceLeaf } from "obsidian";
 import { Issue, isTemplateLike } from "./rules";
-import { effectiveStatus } from "./store";
+import { effectiveStatus, needsAttention } from "./store";
 import { diffLines } from "./diff";
-import { collectDevTasks, DevFileRef, DevTask, DEFAULT_DEV_DOC_FOLDER, devAuthorActions, isUnderNamedFolder, targetFolderOf, taskState } from "./dev";
+import {
+	collectDevTasks,
+	DevFileRef,
+	DevTask,
+	DEFAULT_DEV_DOC_FOLDER,
+	ARCHIVE_DOC_SUFFIX,
+	ARCHIVE_FOLDER,
+	SHARED_CONFIG_FOLDER,
+	ST_ADJUSTING,
+	ST_APPROVED,
+	ST_BUGFIX_OPEN,
+	ST_CHANGE_OPEN,
+	ST_CLOSED,
+	ST_COMPLETED,
+	devAuthorActions,
+	isUnderNamedFolder,
+	targetFolderOf,
+	taskState,
+} from "./dev";
 import { t } from "./i18n";
 import type AiWorkReviewPlugin from "./main";
 import { FixModal } from "./fixmodal";
@@ -23,7 +41,7 @@ const DIM_KEY: Record<string, string> = {
 	character: "dim.character",
 };
 
-const GROUP_ORDER = ["__root__", "世界观", "人物库", "大道库", "事件库", "技能库", "章节库"];
+const GROUP_ORDER = ["__root__", "worldview", "characters", "principles", "events", "skills", "chapters"];
 
 export class ReviewView extends ItemView {
 	plugin: AiWorkReviewPlugin;
@@ -141,19 +159,20 @@ export class ReviewView extends ItemView {
 		const groupNames = [...groups.keys()].sort((a, b) => {
 			const ia = GROUP_ORDER.indexOf(a);
 			const ib = GROUP_ORDER.indexOf(b);
-			return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b, "zh-Hans-CN");
+			return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
 		});
 
 		let visibleCount = 0;
 		for (const g of groupNames) {
 			let groupPaths = store.sortedPaths(groups.get(g)!);
 			if (this.onlyIssues) {
-				groupPaths = groupPaths.filter((p) => effectiveStatus(store.data.files[p]).status !== "pass");
+				// A file with a pending proposal is always an issue, whatever its verdict says
+				groupPaths = groupPaths.filter((p) => needsAttention(store.data.files[p], this.plugin.proposals.has(p)));
 			}
 			if (groupPaths.length === 0) continue;
 			visibleCount += groupPaths.length;
 			const label = g === "__root__" ? t("group.root") : g;
-			list.createDiv({ cls: "nr-group-title", text: `${label}（${groupPaths.length}）` });
+			list.createDiv({ cls: "nr-group-title", text: `${label} (${groupPaths.length})` });
 			for (const p of groupPaths) this.renderFileRow(list, p);
 		}
 		if (visibleCount === 0) {
@@ -202,20 +221,20 @@ export class ReviewView extends ItemView {
 			.sort((a, b) => {
 				const ka = taskState(a).kind === "final" ? 1 : 0;
 				const kb = taskState(b).kind === "final" ? 1 : 0;
-				return ka - kb || a.slug.localeCompare(b.slug, "zh-Hans-CN");
+				return ka - kb || a.slug.localeCompare(b.slug);
 			});
 
 		this.renderActions(root);
 
-		// ---- 资产页签：文档 / 概念卡 / 归档 同级切换，专注哪块就划到哪块（在功能按钮行下方） ----
+		// ---- Asset tabs: docs / concept cards / archives as siblings below the action row ----
 		const mdFiles = this.app.vault.getMarkdownFiles();
-		const concepts = mdFiles.filter((f) => isUnderNamedFolder(f.path, "公用配置"));
-		const archives = mdFiles.filter((f) => isUnderNamedFolder(f.path, "归档") && !isUnderNamedFolder(f.path, "公用配置"));
+		const concepts = mdFiles.filter((f) => isUnderNamedFolder(f.path, SHARED_CONFIG_FOLDER));
+		const archives = mdFiles.filter((f) => isUnderNamedFolder(f.path, ARCHIVE_FOLDER) && !isUnderNamedFolder(f.path, SHARED_CONFIG_FOLDER));
 		if (seq !== this.renderSeq) return;
 		const tabRow = root.createDiv({ cls: "nr-modes" });
 		const tab = (key: "doc" | "concept" | "archive", label: string, n: number) => {
 			tabRow
-				.createEl("button", { cls: `nr-btn nr-btn-sm ${this.devTab === key ? "nr-btn-active" : ""}`, text: `${label}（${n}）` })
+				.createEl("button", { cls: `nr-btn nr-btn-sm ${this.devTab === key ? "nr-btn-active" : ""}`, text: `${label} (${n})` })
 				.addEventListener("click", () => {
 					if (this.devTab !== key) {
 						this.devTab = key;
@@ -261,10 +280,10 @@ export class ReviewView extends ItemView {
 				arr.push(tk);
 				groups.set(g, arr);
 			}
-			for (const [g, items] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0], "zh-Hans-CN"))) {
-				// 组标题只显示模块名（路径末段），完整路径放悬停提示
+			for (const [g, items] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+				// Group title shows only the module name (last path segment); the full path goes into the tooltip
 				const leaf = g.split("/").pop() || g;
-				list.createDiv({ cls: "nr-group-title", text: `${leaf}（${items.length}）`, title: g });
+				list.createDiv({ cls: "nr-group-title", text: `${leaf} (${items.length})`, title: g });
 				for (const tk of items) this.renderTaskRow(list, tk);
 			}
 		}
@@ -276,15 +295,15 @@ export class ReviewView extends ItemView {
 			list.createDiv({ cls: "nr-empty", text: t("view.assetsEmpty") });
 			return;
 		}
-		for (const f of [...concepts].sort((a, b) => a.basename.localeCompare(b.basename, "zh-Hans-CN"))) {
+		for (const f of [...concepts].sort((a, b) => a.basename.localeCompare(b.basename))) {
 			const r = list.createDiv({ cls: "nr-file" });
 			if (f.path === this.currentPath) r.addClass("nr-file-current");
 			const head = r.createDiv({ cls: "nr-file-head" });
 			const nameEl = head.createSpan({ cls: "nr-file-name", text: f.basename });
 			nameEl.addEventListener("click", () => void this.plugin.openAt(f.path));
-			const def = (await this.app.vault.cachedRead(f)).split("\n").find((l) => l.trim().startsWith("- **定义**"));
+			const def = (await this.app.vault.cachedRead(f)).split("\n").find((l) => l.trim().startsWith("- **Definition**"));
 			if (seq !== this.renderSeq) return;
-			if (def) head.title = def.replace(/^-\s*\*\*定义\*\*[:：]\s*/, "").trim();
+			if (def) head.title = def.replace(/^-\s*\*\*Definition\*\*[:：]\s*/, "").trim();
 		}
 	}
 
@@ -311,9 +330,9 @@ export class ReviewView extends ItemView {
 			arr.push(f);
 			byModule.set(mod, arr);
 		}
-		for (const [mod, files] of [...byModule.entries()].sort((a, b) => a[0].localeCompare(b[0], "zh-Hans-CN"))) {
-			list.createDiv({ cls: "nr-group-title", text: `${mod}（${files.length}）`, title: mod });
-			for (const f of files.sort((a, b) => a.basename.localeCompare(b.basename, "zh-Hans-CN"))) {
+		for (const [mod, files] of [...byModule.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+			list.createDiv({ cls: "nr-group-title", text: `${mod} (${files.length})`, title: mod });
+			for (const f of files.sort((a, b) => a.basename.localeCompare(b.basename))) {
 				const r = list.createDiv({ cls: "nr-file" });
 				if (f.path === this.currentPath) r.addClass("nr-file-current");
 				const head = r.createDiv({ cls: "nr-file-head" });
@@ -322,7 +341,7 @@ export class ReviewView extends ItemView {
 				const entries = (await this.app.vault.cachedRead(f)).match(/^###\s/gm)?.length ?? 0;
 				if (seq !== this.renderSeq) return;
 				if (entries > 0) head.createSpan({ cls: "nr-badge nr-badge-count", text: `${entries}` });
-				const origin = docFiles.get(`${mod}/${f.basename.replace(/-归档$/, "")}`);
+				const origin = docFiles.get(`${mod}/${f.basename.endsWith(ARCHIVE_DOC_SUFFIX) ? f.basename.slice(0, -ARCHIVE_DOC_SUFFIX.length) : f.basename}`);
 				if (origin) {
 					const link = head.createSpan({ cls: "nr-file-name nr-task-link", text: t("view.archiveOriginal") });
 					link.addEventListener("click", () => void this.plugin.openAt(origin.path));
@@ -350,7 +369,7 @@ export class ReviewView extends ItemView {
 		if (reviewPath === this.currentPath) row.addClass("nr-file-current");
 
 		const head = row.createDiv({ cls: "nr-file-head" });
-		head.createSpan({ cls: `nr-dot ${dotCls}`, title: `${t("dev.taskStatus")}：${st.label || "—"}` });
+		head.createSpan({ cls: `nr-dot ${dotCls}`, title: `${t("dev.taskStatus")}: ${st.label || "—"}` });
 		const name = head.createSpan({ cls: "nr-file-name", text: tk.slug });
 		if (reviewPath) name.addEventListener("click", () => void this.plugin.openAt(reviewPath));
 		if (st.label) head.createSpan({ cls: "nr-badge", text: st.label });
@@ -400,7 +419,7 @@ export class ReviewView extends ItemView {
 		const body = row.createDiv({ cls: "nr-file-body" });
 		const line = (label: string, path: string | undefined, extra: string) => {
 			const d = body.createDiv({ cls: "nr-task-line" });
-			d.createSpan({ cls: "nr-verdict-label", text: `${label}：` });
+			d.createSpan({ cls: "nr-verdict-label", text: `${label}: ` });
 			if (path) {
 				const a = d.createSpan({ cls: "nr-file-name nr-task-link", text: path.split("/").pop() ?? path });
 				a.addEventListener("click", () => void this.plugin.openAt(path));
@@ -441,31 +460,31 @@ export class ReviewView extends ItemView {
 			});
 		};
 		const settleOn = actions.approve === "settle";
-		const landOn = !settleOn && status.includes("变更中");
+		const landOn = !settleOn && status.includes(ST_CHANGE_OPEN);
 		if (landOn) {
-			// 变更中：下一步是 AI 落地代码，不给「完结」（防跳过落地）——「落地」复制该文档的变更指令
+			// change-open: the next step is the AI landing the code; no "Close" here (it would skip landing). "Land" copies the change prompt for this doc
 			btn(t("verdict.land"), false, () => void this.plugin.copyChangeLandPrompt(path), t("dev.landHint"));
 		} else {
 			const passOn = settleOn
 				? false
 				: actions.approve === "done"
-					? status.includes("完结") || status.includes("已完成")
-					: status.includes("已通过");
+					? status.includes(ST_CLOSED) || status.includes(ST_COMPLETED)
+					: status.includes(ST_APPROVED);
 			const approveLabel = settleOn ? t("verdict.settle") : actions.approve === "done" ? t("verdict.done") : t("verdict.pass");
 			btn(approveLabel, passOn, () => void this.plugin.approveRequirement(path), settleOn ? t("dev.settleHint") : undefined);
 		}
 		if (actions.adjust) {
-			btn(t("verdict.adjust"), status.includes("调整") && !status.includes("变更"), () => {
+			btn(t("verdict.adjust"), status.includes(ST_ADJUSTING) && !status.includes("change"), () => {
 				new AdjustModal(this.app, this.plugin, path, note(), "req").open();
 			});
 		}
 		if (actions.bug) {
-			btn(t("verdict.bug"), status.includes("整改中"), () => {
+			btn(t("verdict.bug"), status.includes(ST_BUGFIX_OPEN), () => {
 				new DevEntryModal(this.app, this.plugin, path, "bug").open();
 			});
 		}
 		if (actions.change) {
-			btn(t("verdict.change"), status.includes("变更中"), () => {
+			btn(t("verdict.change"), status.includes(ST_CHANGE_OPEN), () => {
 				new DevEntryModal(this.app, this.plugin, path, "change").open();
 			});
 		}
@@ -564,7 +583,7 @@ export class ReviewView extends ItemView {
 		if (path === this.currentPath) row.addClass("nr-file-current");
 
 		const head = row.createDiv({ cls: "nr-file-head" });
-		const originText = origin === "none" ? "" : `（${t(`origin.${origin}`)}）`;
+		const originText = origin === "none" ? "" : ` (${t(`origin.${origin}`)})`;
 		const dot = head.createSpan({ cls: `nr-dot nr-dot-${status}` });
 		dot.title = `${t(`status.${status}`)}${originText}`;
 		const nameEl = head.createSpan({ cls: "nr-file-name", text: base });

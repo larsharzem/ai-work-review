@@ -6,6 +6,33 @@ AI coding assistants (ZCode, Claude Code, Cursor, …) edit your notes fast, but
 
 Chinese UI documentation: [中文说明](#中文说明) · Interface language: Chinese / English (auto-detected, configurable).
 
+## This fork (0.9.0)
+
+`larsharzem/ai-work-review`, forked from `zhouweijie/ai-work-review` 0.8.0. Two behaviour changes and one vocabulary switch:
+
+**1. A newly imported report supersedes an earlier "Approve".** The panel shows `userVerdict` as long as it is set and only falls back to the AI verdict. A `pass` from an earlier approval therefore used to hide every later report — and any proposal that came with it — under "Issues only" for good, so an external routine had to reach into `data.json` to clear it. Now the ingest does it: importing a report for a file whose `userVerdict` is `pass` clears that verdict and logs why. An **Adjust** verdict (`fail`) is kept — its note feeds the fix prompt.
+
+**2. A file with a proposal stays visible under "Issues only"**, whatever its verdict says. Rule checks only look at the file's own content, so a file can read `pass` while a full replacement is waiting in `.ai-review/proposals/`. Both rules are pinned by tests (`needsAttention` in `store.ts`, the supersede rule in `test/integration.mjs`).
+
+**3. Every Chinese string that carries function is English now** — stored values, document vocabulary, folder and file names, regex defaults, default settings, sort locale. Only comments and the `zh` UI table in `src/i18n.ts` stay Chinese (plus a handful of regex classes that deliberately read both ASCII and full-width punctuation, e.g. `[:：]`).
+
+| Kind | upstream | this fork |
+| --- | --- | --- |
+| Statuses | 待审核 / 待开发 / 调整, 调整中 / 已通过 / 开发中 / 已交付 / 修改中 / 完结 / 已完成 / 变更中 / 整改中 | `awaiting-review` / `awaiting-build` / `adjusting` / `approved` / `in-development` / `delivered` / `revising` / `closed` / `completed` / `change-open` / `bugfix-open` |
+| Fields | 状态 / 交付日期 / 目标目录 / 整改 / 落实 / 定义 / 模块 / 来源 / 提出日期 | `Status` / `Delivery date` / `Target directory` / `Fix` / `Landed` / `Definition` / `Module` / `Source` / `Raised on` |
+| Sections | ## 补充需求 / ## 缺陷记录 / ## 需求变更 | `## Supplementary requirements` / `## Defect log` / `## Requirement changes` |
+| Archive pointer | `> 已完成条目归档：` / suffix `-归档` | `> Completed entries archived:` / `-archive` |
+| Folders | 开发文档 / 开发需求 / 开发交付 / 公用配置 / 归档 / 接口文档 / 组件文档 / 页面文档 | `dev-docs` / `dev-requirements` / `dev-deliveries` / `shared-config` / `archive` / `api-docs` / `component-docs` / `page-docs` |
+| Novel vault | 人物库 / 章节库 / 事件库 / 技能库 / 大道库 / 世界观 / 大纲.md | `characters` / `chapters` / `events` / `skills` / `principles` / `worldview` / `outline.md` |
+| Templates | 人物模板.md … / _模板 / 模板.md / _模块.md | `character-template.md` … / `_template` / `template.md` / `_module.md` |
+| Card / report files | _模块.md / _索引.md / _接口.md / _标签.md / _比对报告.md / _检查报告.md | `_module.md` / `_index.md` / `_api.md` / `_tags.md` / `_compare-report.md` / `_check-report.md` |
+| Tag namespaces | #能力/… · #场景/… | `#capability/…` · `#scenario/…` |
+| `history.action` in `data.json` | 规则检查 / 导入AI报告 / 人工标记通过 / 人工调整（提交意见） / 清除人工裁决 / 应用AI修改稿 | `rule-check` / `ai-report-imported` / `user-approved` / `user-adjustment-requested` / `user-verdict-cleared` / `proposal-applied` |
+
+Existing `data.json` files keep their Chinese `action` values in `history`; nothing compares them, so no migration step is needed. The `en` dictionary is the fallback now (upstream fell back to `zh`), and `setFieldValue` writes `- **Field**: value` with the space the ASCII colon needs.
+
+`skills/` writes the same vocabulary: folder and file names, statuses, field names, section headings, card and report files and the tag namespaces were switched there too, so dev mode works with this fork. The Chinese prose of those skills and the bilingual subcommand names (`/dev-review 调整` = `/dev-review adjust`) are unchanged — the agent reads the instructions in Chinese and writes the documents in English.
+
 ## Why
 
 Vibe-editing a knowledge vault fails in a predictable way: small inconsistencies accumulate until nobody knows which files are trustworthy. This plugin closes the loop:
@@ -19,7 +46,7 @@ Vibe-editing a knowledge vault fails in a predictable way: small inconsistencies
 The panel header has a mode switch (persisted per vault):
 
 - **Novel mode** — per-file review: every markdown file in scope gets a verdict, grouped by folder. Best for reviewing knowledge/setting files one by one.
-- **Dev mode** — task-pipeline review. Each change lives in one **开发文档** under `docs/开发文档/<module>/`. The author can **Adjust** or **Approve**; templates live in the agent skill, not the vault. Fixed bugs are distilled into the module card's **缺陷史** (symptom → root cause), which the AI reads before start/change/deliver as a regression checklist. Shared concepts (e.g. a local currency) live as concept cards under `docs/公用配置/` (distilled via /dev-review 建卡 from the chat or from code), referenced from docs via `[[wikilinks]]` — the card is authoritative and the AI never guesses; variant terms in docs are unified to the canonical name. External API material (web pages / tables / txt / word) is normalized via /dev-review 接口摄取 into one per-service summary under `docs/接口文档/`; 接口变动 produces field-level change lists and can hand off adaptation requirements; 接口比对 diffs the doc against code call sites to find drift. Reusable components are registered into `docs/组件文档/` via /dev-review 组件解析, with dual-dimension tags (#能力/#场景, controlled vocabulary, searchable in Obsidian, index grouped by capability); before writing UI, 组件查 locates candidates tag-first and recommends what to reuse; before changing a component or page, 组件影响 reverse-maps every consumer from code into an impact list; [[page]]/[[component]] wikilinks in business docs form a business→page→component impact chain (changes graded along the chain, code search as the fallback). Legacy `开发需求/` + `开发交付/` pairs still show until migrated.
+- **Dev mode** — task-pipeline review. Each change lives in one **dev doc** under `docs/dev-docs/<module>/`. The author can **Adjust** or **Approve**; templates live in the agent skill, not the vault. Fixed bugs are distilled into the module card's **Defect history** (symptom → root cause), which the AI reads before start/change/deliver as a regression checklist. Shared concepts (e.g. a local currency) live as concept cards under `docs/shared-config/` (distilled via /dev-review 建卡 from the chat or from code), referenced from docs via `[[wikilinks]]` — the card is authoritative and the AI never guesses; variant terms in docs are unified to the canonical name. External API material (web pages / tables / txt / word) is normalized via /dev-review 接口摄取 into one per-service summary under `docs/api-docs/`; 接口变动 produces field-level change lists and can hand off adaptation requirements; 接口比对 diffs the doc against code call sites to find drift. Reusable components are registered into `docs/component-docs/` via /dev-review 组件解析, with dual-dimension tags (#capability/#scenario, controlled vocabulary, searchable in Obsidian, index grouped by capability); before writing UI, 组件查 locates candidates tag-first and recommends what to reuse; before changing a component or page, 组件影响 reverse-maps every consumer from code into an impact list; [[page]]/[[component]] wikilinks in business docs form a business→page→component impact chain (changes graded along the chain, code search as the fallback). Legacy `dev-requirements/` + `dev-deliveries/` pairs still show until migrated. (The `/dev-review` subcommand names stay bilingual — `skills/cursor-commands/` ships both spellings.)
 
 Pair Dev mode with a small agent skill (see the `skills/` folder in this repo) so the AI writes requirement docs & delivery notes there and consumes your adjustments — a full "AI works → you approve in Obsidian → AI continues" loop.
 
@@ -27,7 +54,7 @@ Pair Dev mode with a small agent skill (see the `skills/` folder in this repo) s
 
 **Rule checks** (run instantly, no AI needed)
 - Template completeness — map any folder to a template file; the plugin checks that sections (`## …`) and fields (`- **name**:`) exist and aren't left empty or still containing the template placeholder. Values written in sub-bullets are recognized.
-- Draft/pending markers — configurable regex (defaults: 草案， 待定， TODO, …) with per-line locations.
+- Draft/pending markers — configurable regex (default: `TODO|FIXME|TBD|TBA|draft|Draft|placeholder|unresolved|undecided`) with per-line locations.
 - Reference integrity — `` `path/to/file.md` `` backtick references and `[[wikilinks]]` that point nowhere.
 - Index consistency — an index file's table is cross-checked against the folder it indexes (missing listings / dead links, both directions).
 - Status field checks — configurable per folder (`folder|field|final values`), e.g. flag chapters not yet final.
@@ -105,13 +132,13 @@ Any agent that can read/write files works. For [ZCode](https://zcode.dev) / Clau
 
 Build (`npm install && npm run build:only`) and copy `main.js`, `manifest.json`, `styles.css` into `<vault>/.obsidian/plugins/ai-work-review/`, then enable it in Obsidian settings. Or use `node scripts/install-to-vault.mjs <vault…>`.
 
-For local development, create `vaults.local.json` in the repo root (git-ignored) listing your vault paths — `["/path/to/vault", …]`. All entries are the default install targets of `npm run build`; the first entry doubles as the dev vault for `npm run test`. Machine-specific, never committed.
+For local development, create `vaults.local.json` in the repo root (git-ignored) listing your vault paths — `["/path/to/vault", …]`. All entries are the default install targets of `npm run build`. Machine-specific, never committed. `npm run test` needs none of this: it builds its own throwaway vault in a temp directory (`test/fixture-vault.mjs`).
 
 ## Development
 
 ```bash
 npm install
-npm run test        # unit tests (rule checker, report parser, diff) + full integration test
+npm run test        # unit tests (rules, report parser, diff, store, dev mode) + integration test, both against a generated fixture vault
 npm run build       # typecheck + bundle + install into the vaults listed in vaults.local.json
 npm run dev         # watch mode
 ```
@@ -128,7 +155,7 @@ Source layout: `rules` (pure checker functions) · `store` (verdict state) · `i
 
 # 中文说明
 
-**AI 工作审核**：在 Obsidian 里审核并批准 AI 对你笔记库的修改。面板顶部可在两种模式间切换（按 vault 记忆）：**小说模式**逐文件审核设定档案；**开发模式**扫描 `docs/开发文档/<模块>/` 下的统一开发文档，需求阶段可点 **通过** / **调整**，对过代码以后可点 **完结** / **缺陷** / **需求变更**，变更合入文档后用 **定稿** 确认进入 `变更中`（该状态不能直接完结，避免跳过代码落地）。已修复的缺陷由 AI 汇入模块卡 **缺陷史**（症状 → 根因），开工 / 变更 / 交付前先读它做回归检查，防止旧缺陷复发；任务行与面板顶部会显示缺陷计数。公用概念（如本地货币）用 `/dev-review 建卡` 沉淀到 `docs/公用配置/` 概念卡（定义可从对话或代码提炼），开发文档用 `[[双链]]` 引用，AI 以卡为准、不猜测；建卡时会把文档里的变体叫法统一成规范词。外部接口资料（网页 / 表格 / txt / word）用 `/dev-review 接口摄取` 规范化成 `docs/接口文档/` 每服务一份总汇，`接口变动` 出字段级变动清单并可联动生成适配需求，`接口比对` 对照代码调用点找漂移。可复用组件用 `/dev-review 组件解析` 登记进 `docs/组件文档/`（双维标签 #能力/#场景，受控词表，Obsidian 可全局搜索，索引按能力分组），写 UI 前 `组件查` 标签优先定位、优先复用，避免重复造轮子；改组件或页面前 `组件影响` 代码反查受影响方出影响清单；业务文档的 [[页面]]/[[组件]] 双链构成 业务→页面→组件 分级影响链（改动可沿链定级，代码反查兜底）。代码项目的模板写在技能里，不往仓库落模板文件；未合并的旧 `开发需求/` / `开发交付/` 仍可配对显示。
+**AI 工作审核**：在 Obsidian 里审核并批准 AI 对你笔记库的修改。面板顶部可在两种模式间切换（按 vault 记忆）：**小说模式**逐文件审核设定档案；**开发模式**扫描 `docs/dev-docs/<module>/` 下的统一开发文档，需求阶段可点 **通过** / **调整**，对过代码以后可点 **完结** / **缺陷** / **Requirement changes**，变更合入文档后用 **定稿** 确认进入 `change-open`（该状态不能直接完结，避免跳过代码落地）。已修复的缺陷由 AI 汇入模块卡 **Defect history**（症状 → 根因），开工 / 变更 / 交付前先读它做回归检查，防止旧缺陷复发；任务行与面板顶部会显示缺陷计数。公用概念（如本地货币）用 `/dev-review 建卡` 沉淀到 `docs/shared-config/` 概念卡（定义可从对话或代码提炼），开发文档用 `[[双链]]` 引用，AI 以卡为准、不猜测；建卡时会把文档里的变体叫法统一成规范词。外部接口资料（网页 / 表格 / txt / word）用 `/dev-review 接口摄取` 规范化成 `docs/api-docs/` 每服务一份总汇，`接口变动` 出字段级变动清单并可联动生成适配需求，`接口比对` 对照代码调用点找漂移。可复用组件用 `/dev-review 组件解析` 登记进 `docs/component-docs/`（双维标签 #capability/#scenario，受控词表，Obsidian 可全局搜索，索引按能力分组），写 UI 前 `组件查` 标签优先定位、优先复用，避免重复造轮子；改组件或页面前 `组件影响` 代码反查受影响方出影响清单；业务文档的 [[页面]]/[[组件]] 双链构成 业务→页面→组件 分级影响链（改动可沿链定级，代码反查兜底）。代码项目的模板写在技能里，不往仓库落模板文件；未合并的旧 `dev-requirements/` / `dev-deliveries/` 仍可配对显示。
 
 规则检查（模板完整性、草案标记、引用完整性、索引一致性、状态字段）在本地即时完成；AI 深度审核由终端里的智能体完成并把结构化报告写入 vault 根下的 `.ai-review/` 桥接目录（对 Obsidian 检索隐藏）；修改稿必须经 diff 对照、你点击「应用替换」后才会写入原文件。你还可以在面板里对文件点「调整」写明不足点，意见同步给 AI 生成针对性修改稿——文件只有在你人工标记「通过」后才算定稿。
 

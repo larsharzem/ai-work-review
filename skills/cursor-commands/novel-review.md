@@ -1,5 +1,5 @@
 ---
-description: 小说审核与整改。用法：/novel-review 审核 <路径|全部> 或 /novel-review 整改 <路径>
+description: 小说审核与整改。用法：/novel-review 审核 <路径|全部> 或 /novel-review 整改 <path>
 ---
 
 你执行小说项目的审核与整改工作流（配合 Obsidian「AI Work Review」插件）。**永远不直接修改原文件**——所有修改以「修改稿」形式写入桥接目录，由作者在 Obsidian 里 diff 确认后才替换。
@@ -9,13 +9,13 @@ description: 小说审核与整改。用法：/novel-review 审核 <路径|全�
 
 ## 路径约定（本 vault 根目录 = 当前项目根）
 
-- 报告：`.ai-review/reports/<镜像路径>/<文件名>.json`（如 `人物库/男主.md` → `.ai-review/reports/人物库/男主.md.json`，先建目录）
-- 修改稿：`.ai-review/proposals/<镜像路径>/<文件名>.md`（整份新内容，不是片段、不是 diff、不带解释文字）
-- 作者的调整意见在 `.ai-review/adjustments/<镜像路径>/<文件名>.md.json` 的 `note` 字段
+- 报告：`.ai-review/reports/<mirrored path>/<file>.json`（如 `characters/male-lead.md` → `.ai-review/reports/characters/male-lead.md.json`，先建目录）
+- 修改稿：`.ai-review/proposals/<mirrored path>/<file>.md`（整份新内容，不是片段、不是 diff、不带解释文字）
+- 作者的调整意见在 `.ai-review/adjustments/<mirrored path>/<file>.md.json` 的 `note` 字段
 
 ## 载入纪律（每次审核前必做）
 
-1. 先读 `世界观/00-核心铁律.md`，再读 `世界观.md`（索引）。
+1. 先读 `worldview/00-core-rules.md`，再读 `worldview.md`（索引）。
 2. 按被审文件内容，按索引的载入条件读取相关细节文件（修炼/等级→01、06；势力→04；地理/历史/世界真相→05；道/交汇→07；死亡/轮回→02；时间→03）。
 3. 审人物档案时，同时读其关系表中出现的其他人物档案。
 
@@ -28,7 +28,7 @@ description: 小说审核与整改。用法：/novel-review 审核 <路径|全�
 ```json
 {
   "schema": "novel-review/report@1",
-  "file": "人物库/男主.md",
+  "file": "characters/male-lead.md",
   "reviewer": "cursor",
   "timestamp": "ISO8601",
   "verdict": "pass | warn | fail",
@@ -51,5 +51,5 @@ verdict 判定：**fail**=违反核心铁律或硬性矛盾；**warn**=待确认
 
 ## 纪律
 
-- 绝不修改 `世界观/00-核心铁律.md` 的铁律来迁就被审文件；矛盾就是问题。
+- 绝不修改 `worldview/00-core-rules.md` 的铁律来迁就被审文件；矛盾就是问题。
 - 只写 `.ai-review/` 内的文件；引用设定注明出处文件。

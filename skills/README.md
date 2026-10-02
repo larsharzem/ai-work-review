@@ -15,7 +15,7 @@ skills/
 │       ├── info-cn.md       /dev-review:info-cn（中文说明书）
 │       └── info-en.md       /dev-review:info-en（English manual）
 ├── dev-parse-biz/           业务解析技能（被 dev-review 的 解析业务 / 深度拆解 调用；单独装也可用）
-│   └── SKILL.md             解析单个模块 / 深度拆解整个项目的业务逻辑 → docs/开发文档/<模块>/
+│   └── SKILL.md             解析单个模块 / 深度拆解整个项目的业务逻辑 → docs/dev-docs/<module>/
 └── cursor-commands/         Cursor 版命令（.cursor/commands/，平铺命名；ZCode 用户级同构可用）
     ├── novel-review.md          /novel-review
     ├── novel-review-info-cn.md  /novel-review-info-cn
@@ -42,4 +42,4 @@ skills/
 - **Cursor（全局，所有项目可用）**: 技能拷到 `~/.cursor/skills/<name>/`，命令拷到 `~/.cursor/commands/`。
 - **ChatGPT**: see [`chatgpt/`](../chatgpt/) for a Custom GPT kit.
 
-项目级与用户级同时存在时，命令入口优先加载项目级技能。The skills are templates — module mapping defaults to `lib/features/<模块>`（Flutter）；其他项目结构由「解析模块」自动识别一级业务目录，不需要改文件. The plugin itself works with any agent that follows the bridge protocol in the main README.
+项目级与用户级同时存在时，命令入口优先加载项目级技能。The skills are templates — module mapping defaults to `lib/features/<module>`（Flutter）；其他项目结构由「解析模块」自动识别一级业务目录，不需要改文件. The plugin itself works with any agent that follows the bridge protocol in the main README.

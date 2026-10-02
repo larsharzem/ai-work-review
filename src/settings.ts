@@ -40,18 +40,18 @@ export const DEFAULT_SETTINGS: AiWorkReviewSettings = {
 	devDocFolder: DEFAULT_DEV_DOC_FOLDER,
 	devReqFolder: DEFAULT_DEV_REQ_FOLDER,
 	devDeliverFolder: DEFAULT_DEV_DELIVER_FOLDER,
-	scanFolders: "人物库,事件库,技能库,章节库,大道库,世界观",
-	scanRootFiles: "大纲.md,世界观.md",
+	scanFolders: "characters,events,skills,chapters,principles,worldview",
+	scanRootFiles: "outline.md,worldview.md",
 	templateMapText: [
-		"人物库=人物库/人物模板.md",
-		"事件库=事件库/事件模板.md",
-		"技能库=技能库/技能模板.md",
-		"章节库=章节库/章节模板.md",
-		"大道库=大道库/_模板.md",
+		"characters=characters/character-template.md",
+		"events=events/event-template.md",
+		"skills=skills/skill-template.md",
+		"chapters=chapters/chapter-template.md",
+		"principles=principles/_template.md",
 	].join("\n"),
-	indexFiles: "世界观.md",
-	aiContextHint: "先载入 世界观/00-核心铁律.md 与 世界观.md，再按索引载入与文件内容相关的细节文件",
-	statusChecksText: "章节库|当前状态|定稿",
+	indexFiles: "worldview.md",
+	aiContextHint: "Load worldview/00-core-rules.md and worldview.md first, then the detail files the index lists for the content under review",
+	statusChecksText: "chapters|Status|final",
 	draftMarkerRegex: DEFAULT_DRAFT_REGEX,
 	bridgeFolder: ".ai-review",
 	autoIngest: true,
@@ -81,14 +81,14 @@ export function codeProjectDevSettings(): Pick<
 		scanRootFiles: "",
 		templateMapText: "",
 		indexFiles: "",
-		aiContextHint: "先读项目 AGENTS.md、.cursor/skills/dev-review/SKILL.md 与目标模块代码。模板在技能内，不要往仓库写模板文件。",
-		statusChecksText: `${DEFAULT_DEV_DOC_FOLDER}|状态|已完成`,
+		aiContextHint: "Read the project's AGENTS.md, .cursor/skills/dev-review/SKILL.md and the target module's code first. Templates live in the skill; do not write template files into the repository.",
+		statusChecksText: `${DEFAULT_DEV_DOC_FOLDER}|Status|completed`,
 	};
 }
 
 export function needsCodeProjectLayout(s: AiWorkReviewSettings, topEntries: string[]): boolean {
 	if (!shouldUseProjectDocsLayout(topEntries)) return false;
-	if (s.scanFolders.includes("人物库")) return true;
+	if (s.scanFolders.includes("characters")) return true;
 	if (s.devReqFolder === PROJECT_DOCS_REQ_FOLDER) return true;
 	if (s.devReqFolder === DEFAULT_DEV_REQ_FOLDER && s.scanFolders.includes(DEFAULT_DEV_REQ_FOLDER) && !s.scanFolders.includes(DEFAULT_DEV_DOC_FOLDER)) {
 		return true;

@@ -1,19 +1,25 @@
 /**
- * 集成测试：用桩替换 obsidian 模块，加载构建产物 main.js，
- * 在真实 vault 上跑通 onload → 导入AI报告 → 规则检查 → 应用修改稿 全流程。
- * 使用临时测试文件，结束后全部清理，不留下任何痕迹。
+ * Integration test: stubs the obsidian module, loads the built main.js and runs
+ * onload → import AI report → rule check → apply proposal → author adjust
+ * against a generated fixture vault in a temp directory (see fixture-vault.mjs).
+ *
+ * It used to run against a real vault and wiped its `.ai-review` folder on teardown; the fixture
+ * keeps real notes out of reach. The temp vault is removed when the process exits.
  */
 import Module from "node:module";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { vaultRootOrExit } from "./vault-root.mjs";
+import { createFixtureVault } from "./fixture-vault.mjs";
+import { needsAttention } from "../.test/store.mjs";
 
 const pluginDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const vaultRoot = vaultRootOrExit(); // 开发 vault：环境变量 AI_REVIEW_VAULT 或 vaults.local.json 首项
+const fixture = createFixtureVault();
+const vaultRoot = fixture.root;
+process.on("exit", () => fixture.cleanup());
 
-// ---- obsidian 桩 ----
+// ---- obsidian stub ----
 const notices = [];
 class Notice {
 	constructor(msg) {
@@ -70,7 +76,7 @@ class Setting {
 	}
 }
 const normalizePath = (p) => p;
-const getLanguage = () => "zh";
+const getLanguage = () => "en";
 const obsidianStub = { Notice, TFile, Plugin, ItemView, MarkdownView, Modal, PluginSettingTab, Setting, normalizePath, getLanguage };
 
 const origLoad = Module._load;
@@ -79,7 +85,7 @@ Module._load = function (request, parent, isMain) {
 	return origLoad.apply(this, arguments);
 };
 
-// ---- 假 app / vault / adapter（真实文件系统）----
+// ---- fake app / vault / adapter (real file system, temp vault) ----
 const abs = (rel) => path.join(vaultRoot, rel);
 function walkMd(dir, base, out = []) {
 	for (const name of fs.readdirSync(dir)) {
@@ -150,19 +156,23 @@ const fakeWorkspace = {
 const fakeApp = { vault: fakeVault, workspace: fakeWorkspace };
 globalThis.window = { setInterval: () => 0 };
 
-// ---- 测试夹具 ----
-const TEST_MD = "人物库/__nr_test.md";
-const TEST_ORIG = "# 测试人物\n\n## 核心身份\n- **姓名**：测试员（草案）\n- **角色定位**：路人NPC\n";
-const TEST_FIXED = "# 测试人物（AI 修改稿）\n\n## 核心身份\n- **姓名**：测试员改\n- **角色定位**：主角\n";
-const REPORT = JSON.stringify({
-	schema: "novel-review/report@1",
-	file: TEST_MD,
-	reviewer: "zcode-test",
-	timestamp: new Date().toISOString(),
-	verdict: "warn",
-	summary: "集成测试报告",
-	issues: [{ severity: "warn", dimension: "consistency", section: "核心身份", line: 4, problem: "测试问题", suggestion: "测试建议" }],
-});
+// ---- fixtures ----
+const TEST_MD = "characters/__nr_test.md";
+const TEST_ORIG = "# Test character\n\n## Core identity\n- **Name**: Tester (TODO)\n- **Role**: extra\n";
+const TEST_FIXED = "# Test character (AI proposal)\n\n## Core identity\n- **Name**: Tester, renamed\n- **Role**: protagonist\n";
+const report = (summary) =>
+	JSON.stringify({
+		schema: "novel-review/report@1",
+		file: TEST_MD,
+		reviewer: "zcode-test",
+		timestamp: new Date().toISOString(),
+		verdict: "warn",
+		summary,
+		issues: [{ severity: "warn", dimension: "consistency", section: "Core identity", line: 4, problem: "test problem", suggestion: "test suggestion" }],
+	});
+const REPORT_PATH = ".ai-review/reports/characters/__nr_test.md.json";
+const PROPOSAL_PATH = ".ai-review/proposals/characters/__nr_test.md";
+const ADJUSTMENT_PATH = ".ai-review/adjustments/characters/__nr_test.md.json";
 
 let failed = 0;
 const assert = (cond, msg) => {
@@ -173,83 +183,99 @@ const assert = (cond, msg) => {
 	}
 };
 
-try {
-	// 夹具就位
-	fs.writeFileSync(abs(TEST_MD), TEST_ORIG);
-	fs.mkdirSync(abs(".ai-review/reports/人物库"), { recursive: true });
-	fs.mkdirSync(abs(".ai-review/proposals/人物库"), { recursive: true });
-	fs.writeFileSync(abs(".ai-review/reports/人物库/__nr_test.md.json"), REPORT);
-	fs.writeFileSync(abs(".ai-review/proposals/人物库/__nr_test.md"), TEST_FIXED);
+// fixtures in place
+fs.writeFileSync(abs(TEST_MD), TEST_ORIG);
+fs.mkdirSync(abs(".ai-review/reports/characters"), { recursive: true });
+fs.mkdirSync(abs(".ai-review/proposals/characters"), { recursive: true });
+fs.writeFileSync(abs(REPORT_PATH), report("integration test report"));
+fs.writeFileSync(abs(PROPOSAL_PATH), TEST_FIXED);
 
-	console.log("== 集成：插件加载与自动导入 ==");
-	const require = createRequire(import.meta.url);
-	const AiWorkReviewPlugin = require(path.join(pluginDir, "main.js")).default;
-	const plugin = new AiWorkReviewPlugin(fakeApp, { id: "ai-work-review", name: "AI Work Review" });
-	await plugin.onload();
-	await new Promise((r) => setTimeout(r, 500)); // 等 onLayoutReady 里的异步 ingest 完成
-	assert(plugin.commands.length >= 4, `注册了 ${plugin.commands.length} 个命令（≥4）`);
+console.log("== integration: plugin load and auto import ==");
+const require = createRequire(import.meta.url);
+const AiWorkReviewPlugin = require(path.join(pluginDir, "main.js")).default;
+const plugin = new AiWorkReviewPlugin(fakeApp, { id: "ai-work-review", name: "AI Work Review" });
+await plugin.onload();
+await new Promise((r) => setTimeout(r, 500)); // wait for the async ingest inside onLayoutReady
+assert(plugin.commands.length >= 4, `${plugin.commands.length} commands registered (>=4)`);
 
-	const fr = plugin.store.data.files[TEST_MD];
-	assert(!!fr && fr.aiVerdict === "warn", "AI 报告已自动导入（verdict=warn）");
-	assert(plugin.proposals.has(TEST_MD), "修改稿已登记");
-	const archived = fs.readdirSync(abs(".ai-review/archive"));
-	assert(archived.length >= 1, "导入后报告已归档");
-	assert(!fs.existsSync(abs(".ai-review/reports/人物库/__nr_test.md.json")), "reports 目录中不再残留源报告");
+const fr = plugin.store.data.files[TEST_MD];
+assert(!!fr && fr.aiVerdict === "warn", "AI report imported automatically (verdict=warn)");
+assert(plugin.proposals.has(TEST_MD), "proposal registered");
+const archived = fs.readdirSync(abs(".ai-review/archive"));
+assert(archived.length >= 1, "report archived after import");
+assert(!fs.existsSync(abs(REPORT_PATH)), "no source report left behind in reports/");
 
-	console.log("== 集成：全库规则检查 ==");
-	await plugin.runRuleCheck();
-	const checkedCount = Object.keys(plugin.store.data.files).length;
-	assert(checkedCount > 30, `规则检查覆盖 ${checkedCount} 个文件（>30）`);
-	const idxIssues = plugin.store.data.files["世界观.md"].ruleIssues.filter((i) => i.dimension === "index");
-	assert(Array.isArray(idxIssues), "世界观.md 完成规则检查（索引核对逻辑由单元测试合成样例覆盖）");
-	const testFr = plugin.store.data.files[TEST_MD];
-	assert(testFr.ruleStatus === "warn" && testFr.ruleIssues.some((i) => i.dimension === "draft"), "测试文件规则检查为 warn（含草案标记）");
+console.log("== integration: rule check over the whole vault ==");
+await plugin.runRuleCheck();
+const checkedCount = Object.keys(plugin.store.data.files).length;
+assert(checkedCount > 30, `rule check covered ${checkedCount} files (>30)`);
+const idxIssues = plugin.store.data.files["worldview.md"].ruleIssues.filter((i) => i.dimension === "index");
+assert(idxIssues.length === 1, "worldview.md index check reports the one file the fixture index forgets");
+const testFr = plugin.store.data.files[TEST_MD];
+assert(testFr.ruleStatus === "warn" && testFr.ruleIssues.some((i) => i.dimension === "draft"), "test file checks as warn (draft marker)");
 
-	console.log("== 集成：应用修改稿 ==");
-	const applied = await plugin.applyProposal(TEST_MD);
-	assert(applied === true, "applyProposal 返回成功");
-	assert(fs.readFileSync(abs(TEST_MD), "utf8") === TEST_FIXED, "文件内容已被修改稿替换");
-	const fr2 = plugin.store.data.files[TEST_MD];
-	assert(fr2.fixedCount === 1 && fr2.ruleStatus === "unchecked", "整改历史 +1，状态重置为未审");
-	assert(!plugin.proposals.has(TEST_MD), "修改稿列表已清除");
-
-	console.log("== 集成：人工调整（驳回+意见）==");
-	await plugin.applyUserAdjustment(TEST_MD, "请把主角改回去，年龄统一为十四岁");
-	assert(
-		fs.existsSync(abs(".ai-review/adjustments/人物库/__nr_test.md.json")),
-		"调整意见已写入桥接目录 adjustments/",
-	);
-	const savedNote = JSON.parse(fs.readFileSync(abs(".ai-review/adjustments/人物库/__nr_test.md.json"), "utf8"));
-	assert(savedNote.note === "请把主角改回去，年龄统一为十四岁" && savedNote.file === TEST_MD, "调整意见 JSON 内容正确");
-	const frAdj = plugin.store.data.files[TEST_MD];
-	assert(frAdj.userVerdict === "fail" && frAdj.userNote === "请把主角改回去，年龄统一为十四岁", "人工裁决与意见已记录");
-
-	// 新修改稿到位 → 导入 → 应用替换 → 调整意见应随之清除
-	fs.writeFileSync(abs(".ai-review/proposals/人物库/__nr_test.md"), TEST_FIXED);
+console.log("== integration: a newer report supersedes an Approve ==");
+{
+	// Fork behaviour 1: without this, an Approve would hide every later report (and its proposal)
+	// under "Issues only" for good — and the routines would have to patch data.json from outside.
+	plugin.store.applyUserVerdict(TEST_MD, "pass");
+	fs.writeFileSync(abs(REPORT_PATH), report("second pass, still warn"));
 	await plugin.ingestBridge(false);
-	assert(plugin.proposals.has(TEST_MD), "新修改稿已登记");
-	await plugin.applyProposal(TEST_MD);
-	assert(
-		!fs.existsSync(abs(".ai-review/adjustments/人物库/__nr_test.md.json")),
-		"应用修改稿后调整意见已自动清除",
-	);
-	const frAfter = plugin.store.data.files[TEST_MD];
-	assert(frAfter.userVerdict === undefined && frAfter.fixedCount === 2, "替换后裁决清空、整改次数累计（第 2 次）");
+	const after = plugin.store.data.files[TEST_MD];
+	assert(after.userVerdict === undefined, "Approve is cleared by the newer report");
+	assert(after.history.at(-2).action === "user-verdict-cleared" && after.history.at(-2).detail === "superseded by a newer AI report", "the clearing is logged with its reason");
+	assert(after.aiVerdict === "warn" && after.aiSummary === "second pass, still warn", "the newer report is the one that counts");
 
+	// An Adjust verdict must survive: its note feeds the fix prompt
+	await plugin.applyUserAdjustment(TEST_MD, "keep the old name");
+	fs.writeFileSync(abs(REPORT_PATH), report("third pass"));
+	await plugin.ingestBridge(false);
+	const kept = plugin.store.data.files[TEST_MD];
+	assert(kept.userVerdict === "fail" && kept.userNote === "keep the old name", "an Adjust verdict and its note survive a newer report");
 	await plugin.clearUserVerdict(TEST_MD);
-	assert(plugin.store.data.files[TEST_MD].userVerdict === undefined, "清除人工裁决正常");
-
-	console.log("== 收尾 ==");
-	// 清理全部痕迹
-	fs.rmSync(abs(TEST_MD), { force: true });
-	fs.rmSync(abs(".ai-review"), { recursive: true, force: true });
-	assert(!fs.existsSync(abs(TEST_MD)) && !fs.existsSync(abs(".ai-review")), "临时文件与桥接目录已清理");
-	assert(!fs.existsSync(abs(".obsidian/plugins/ai-work-review/data.json")) || true, "插件数据仅在内存（未污染 vault）");
-} finally {
-	// 双保险清理
-	fs.rmSync(abs(TEST_MD), { force: true });
-	fs.rmSync(abs(".ai-review"), { recursive: true, force: true });
 }
 
-console.log(failed === 0 ? "\n集成测试全部通过 ✅" : `\n${failed} 条断言失败 ❌`);
+console.log("== integration: a proposal keeps a passing file visible ==");
+{
+	plugin.store.applyUserVerdict(TEST_MD, "pass");
+	assert(plugin.proposals.has(TEST_MD) && needsAttention(plugin.store.data.files[TEST_MD], true) === true, "fork behaviour 2: pass + proposal stays in the Issues-only list");
+	assert(needsAttention(plugin.store.data.files[TEST_MD], false) === false, "pass without a proposal is filtered out");
+	await plugin.clearUserVerdict(TEST_MD);
+}
+
+console.log("== integration: apply the proposal ==");
+const applied = await plugin.applyProposal(TEST_MD);
+assert(applied === true, "applyProposal reports success");
+assert(fs.readFileSync(abs(TEST_MD), "utf8") === TEST_FIXED, "file content replaced by the proposal");
+const fr2 = plugin.store.data.files[TEST_MD];
+assert(fr2.fixedCount === 1 && fr2.ruleStatus === "unchecked", "fix round counted, status reset to unchecked");
+assert(!plugin.proposals.has(TEST_MD), "proposal removed from the list");
+
+console.log("== integration: author adjustment (reject + note) ==");
+await plugin.applyUserAdjustment(TEST_MD, "put the protagonist back, age stays fourteen");
+assert(fs.existsSync(abs(ADJUSTMENT_PATH)), "adjustment note written to the bridge folder adjustments/");
+const savedNote = JSON.parse(fs.readFileSync(abs(ADJUSTMENT_PATH), "utf8"));
+assert(savedNote.note === "put the protagonist back, age stays fourteen" && savedNote.file === TEST_MD, "adjustment JSON holds the right content");
+const frAdj = plugin.store.data.files[TEST_MD];
+assert(frAdj.userVerdict === "fail" && frAdj.userNote === "put the protagonist back, age stays fourteen", "user verdict and note recorded");
+
+// New proposal arrives → import → apply → the adjustment note must be cleared with it
+fs.writeFileSync(abs(PROPOSAL_PATH), TEST_FIXED);
+await plugin.ingestBridge(false);
+assert(plugin.proposals.has(TEST_MD), "new proposal registered");
+await plugin.applyProposal(TEST_MD);
+assert(!fs.existsSync(abs(ADJUSTMENT_PATH)), "applying the proposal clears the adjustment note");
+const frAfter = plugin.store.data.files[TEST_MD];
+assert(frAfter.userVerdict === undefined && frAfter.fixedCount === 2, "verdict cleared after the replacement, fix rounds add up (2nd)");
+
+await plugin.clearUserVerdict(TEST_MD);
+assert(plugin.store.data.files[TEST_MD].userVerdict === undefined, "clearing the user verdict works");
+
+console.log("== teardown ==");
+fs.rmSync(abs(TEST_MD), { force: true });
+fs.rmSync(abs(".ai-review"), { recursive: true, force: true });
+assert(!fs.existsSync(abs(TEST_MD)) && !fs.existsSync(abs(".ai-review")), "temp file and bridge folder removed");
+assert(!fs.existsSync(abs(".obsidian/plugins/ai-work-review/data.json")), "plugin data stayed in memory (vault not polluted)");
+
+console.log(failed === 0 ? "\nintegration test passed ✅" : `\n${failed} assertions failed ❌`);
 process.exit(failed === 0 ? 0 : 1);

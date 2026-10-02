@@ -39,7 +39,7 @@ Show the following manual to the user (keep the Markdown formatting and content;
 ## Core rules
 
 1. **The AI never edits original files directly** — every change goes through a proposal + diff confirmation.
-2. Before reviewing, it must load `世界观/00-核心铁律.md` and the `世界观.md` index, then relevant detail files as needed.
+2. Before reviewing, it must load `worldview/00-core-rules.md` and the `worldview.md` index, then relevant detail files as needed.
 3. Verdicts: fail = violates the core laws / hard contradiction; warn = needs confirmation / soft inconsistency; pass = no substantive issues.
 4. Reports must be actionable: the problem states what conflicts with what; the suggestion states what to change it to.
 

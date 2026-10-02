@@ -7,136 +7,136 @@
 复制后填空。不要把括号占位留在定稿里。
 
 ```markdown
-# 开发文档：<标题>
+# Dev doc: <title>
 
-## 基本信息
-- **状态**：（待审核 / 调整中 / 已通过 / 开发中 / 已交付 / 完结 / 变更中 / 整改中）
-- **模块**：
-- **目标目录**：（要改的代码目录，如 lib/features/finance）
-- **来源**：（对话 / 模块解析 / 业务解析 / 流程）
-- **提出日期**：
-- **交付日期**：
+## Basics
+- **Status**: (awaiting-review / adjusting / approved / in-development / delivered / closed / change-open / bugfix-open)
+- **Module**:
+- **Target directory**: （要改的代码目录，如 lib/features/finance）
+- **Source**: (conversation / module parse / business parse / flow)
+- **Raised on**:
+- **Delivery date**:
 
-## 背景与目标
+## Background and goal
 
-## 需求描述
+## Requirements
 
-## 验收标准
-- [ ] 
+## Acceptance criteria
+- [ ]
 
-## 边界与非目标
+## Boundaries and non-goals
 
-## 补充需求
+## Supplementary requirements
 
-## 交付
-### 完成内容
-| 改动 | 文件/位置 | 说明 |
+## Delivery
+### Completed work
+| Change | File / location | Notes |
 |---|---|---|
 |  |  |  |
 
-### 自测结果
+### Self-test results
 
-### 验收步骤
-1. 
+### Acceptance steps
+1.
 
-### 风险与遗留
-- 
+### Risks and leftovers
+-
 
-## 审核意见
+## Review notes
 
-## 需求变更
+## Requirement changes
 
-## 缺陷记录
+## Defect log
 ```
 
-节用途说明是**给创建时看的**，不留在定稿正文里：需求变更＝对过代码后改需求写这里（落实后移入归档）；缺陷记录＝交付后 BUG 写这里（整改后补「整改」「根因」并移入归档，汇入模块卡「缺陷史」）。细则见 SKILL.md 的 `变更`/`整改` 与「模板：条目归档」。
+节用途说明是**给创建时看的**，不留在定稿正文里：Requirement changes＝对过代码后改需求写这里（落实后移入归档）；Defect log＝交付后 BUG 写这里（整改后补「Fix」「Root cause」并移入归档，汇入模块卡「Defect history」）。细则见 SKILL.md 的 `变更`/`整改` 与「模板：条目归档」。
 
 ## 模板：微改文档
 
-`docs/开发文档/<模块>/YYYY-MM-DD-微改-<任务名>.md`，精简版开发文档。**「基本信息」整节不可省**——它是插件状态机与 `整合` 的读写锚点，缺字段是**静默失效**：面板「通过」「完结」点了文件不变也不报错，`整合` 永远捞不到这份文档。
+`docs/dev-docs/<module>/YYYY-MM-DD-minor-<task>.md`，精简版开发文档。**「Basics」整节不可省**——它是插件状态机与 `整合` 的读写锚点，缺字段是**静默失效**：面板「通过」「closed」点了文件不变也不报错，`整合` 永远捞不到这份文档。
 
 ```markdown
-# 微改：<标题>
+# Minor change: <title>
 
-## 基本信息
-- **状态**：（待审核 / 调整中 / 已通过 / 开发中 / 已交付 / 完结 / 变更中 / 整改中）
-- **模块**：
-- **目标目录**：（要改的代码目录，如 lib/features/finance）
-- **来源**：微改
-- **提出日期**：
-- **交付日期**：
+## Basics
+- **Status**: (awaiting-review / adjusting / approved / in-development / delivered / closed / change-open / bugfix-open)
+- **Module**:
+- **Target directory**: （要改的代码目录，如 lib/features/finance）
+- **Source**: minor change
+- **Raised on**:
+- **Delivery date**:
 
-## 需求描述
+## Requirements
 
-## 验收标准
-- [ ] 
+## Acceptance criteria
+- [ ]
 
-## 交付
-### 完成内容
-| 改动 | 文件/位置 | 说明 |
+## Delivery
+### Completed work
+| Change | File / location | Notes |
 |---|---|---|
 |  |  |  |
 
-### 自测结果
+### Self-test results
 ```
 
-省掉的章节（背景与目标 / 边界与非目标 / 补充需求 / 审核意见 / 需求变更 / 缺陷记录）`整合` 不读、插件不解析，按需现补：记缺陷时 `## 缺陷记录` 由面板自动追加到文末，作者不必手写。
+省掉的章节（Background and goal / Boundaries and non-goals / Supplementary requirements / Review notes / Requirement changes / Defect log）`整合` 不读、插件不解析，按需现补：记缺陷时 `## Defect log` 由面板自动追加到文末，作者不必手写。
 
 ## 模板：模块卡
 
 ```markdown
-# 模块：<name>
+# Module: <name>
 
-- **目录**：lib/features/<name>
-- **文档**：docs/开发文档/<name>
-- **分层**：
-- **页面**：
-- **职责**：
-- **业务拆解**：未拆解
-- **缺陷史**：无
-- **业务整合**：未整合
+- **Directory**: lib/features/<name>
+- **Docs**: docs/dev-docs/<name>
+- **Layers**:
+- **Pages**:
+- **Responsibilities**:
+- **Business breakdown**: not parsed
+- **Defect history**: none
+- **Business integration**: not integrated
 ```
 
-「业务拆解」只有「解析业务 / 深度拆解」会改：拆完后填 `YYYY-MM-DD（业务线1、业务线2…）`。「缺陷史」只有 `整改` 会改：每修复一条缺陷追加一行 `- YYYY-MM-DD：症状短语 → 根因短语（<任务名>）`，初值 `无`；`开工`/`变更`/`交付` 前先读它做回归。「业务整合」只有 `整合` 会改：每次整合后更新为 `YYYY-MM-DD HH:mm（n 个任务：任务名…）`，初值 `未整合`。
+「Business breakdown」只有「解析业务 / 深度拆解」会改：拆完后填 `YYYY-MM-DD（业务线1、业务线2…）`。「Defect history」只有 `整改` 会改：每修复一条缺陷追加一行 `- YYYY-MM-DD：症状短语 → 根因短语（<task>）`，初值 `none`；`开工`/`变更`/`交付` 前先读它做回归。「Business integration」只有 `整合` 会改：每次整合后更新为 `YYYY-MM-DD HH:mm（n 个任务：任务名…）`，初值 `not integrated`。
 
 ## 模板：条目归档
 
-`docs/归档/<模块>/<文档名>-归档.md`，一份开发文档配一份归档。**不能放 `docs/开发文档/` 内**（插件会把里面的文件当任务文档扫）；文件名带 `-归档` 后缀，避免与原文档双链重名。只由 `变更` / `整改` 在条目处理完时维护：把「落实」／「整改」已填的条目**原样**移入对应节（最新在前，不改一字，只进不出、不回改）。**平时不读**——作者点名追历史时循原文档指针双链进入。
+`docs/archive/<module>/<doc>-archive.md`，一份开发文档配一份归档。**不能放 `docs/dev-docs/` 内**（插件会把里面的文件当任务文档扫）；文件名带 `-archive` 后缀，避免与原文档双链重名。只由 `变更` / `整改` 在条目处理完时维护：把「Landed」／「Fix」已填的条目**原样**移入对应节（最新在前，不改一字，只进不出、不回改）。**平时不读**——作者点名追历史时循原文档指针双链进入。
 
 ```markdown
-# 归档：<任务名>
+# Archive: <task>
 
-> 已完成条目的冷存储。原文档：[[<文档名>]]。只由 `变更`/`整改` 追加，最新在前，不回改，平时不读。
+> completed 条目的冷存储。原文档：[[<doc>]]。只由 `变更`/`整改` 追加，最新在前，不回改，平时不读。
 
-## 需求变更
+## Requirement changes
 
 ### 2026-09-10 14:36
 - （原始条目全文，原样搬入）
-- **落实**：…
+- **Landed**: …
 
-## 缺陷记录
+## Defect log
 
 ### 2026-09-09 11:20
 - （原始条目全文，原样搬入）
-- **整改**：…
-- **根因**：…
+- **Fix**: …
+- **Root cause**: …
 ```
 
 原文档对应节**节尾**的指针行（必须是 `>` 引用行；写成列表行会被面板 pending 统计误判）：
 
 ```markdown
-> 已完成条目归档：[[<文档名>-归档]]
+> Completed entries archived: [[<doc>-archive]]
 ```
 
 ## 模板：概念卡
 
-`docs/公用配置/<概念名>.md`，一个概念一个文件。卡是权威定义：各文档的需求描述/验收标准**不重写**卡内规则，只写本页特有的位置与范围＋`[[概念名]]` 双链引用；`建卡` 落卡时顺带做这趟去重：
+`docs/shared-config/<concept>.md`，一个概念一个文件。卡是权威定义：各文档的 Requirements / Acceptance criteria **不重写**卡内规则，只写本页特有的位置与范围＋`[[概念名]]` 双链引用；`建卡` 落卡时顺带做这趟去重：
 
 ```markdown
-# 概念：<名称>
+# Concept: <name>
 
-- **定义**：（一句话：它是什么、边界在哪）
-- **规则**：（与它相关的硬规则，分条）
-- **别名**：（可选：文档里出现这些词也指本概念）
+- **Definition**: （一句话：它是什么、边界在哪）
+- **Rules**: （与它相关的硬规则，分条）
+- **Aliases**: （可选：文档里出现这些词也指本概念）
 ```
 

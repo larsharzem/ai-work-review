@@ -61,12 +61,12 @@ export interface RuleCheckContext {
 	statusChecks: StatusCheck[];
 }
 
-export const DEFAULT_DRAFT_REGEX = "草案|待定|待补充|待定夺|存疑|TODO|FIXME|待写|未定";
+export const DEFAULT_DRAFT_REGEX = "TODO|FIXME|TBD|TBA|draft|Draft|placeholder|unresolved|undecided";
 
-/** 判断文件是否为模板/说明类文件，应跳过审核 */
+/** Template / explanatory files are skipped by the review */
 export function isTemplateLike(path: string): boolean {
 	const base = path.split("/").pop() ?? path;
-	return base.startsWith("_模板") || base.endsWith("模板.md") || /^readme\.md$/i.test(base) || base === "_模块.md";
+	return base.startsWith("_template") || base.endsWith("template.md") || /^readme\.md$/i.test(base) || base === "_module.md";
 }
 
 /** 最长前缀匹配；若无前缀命中，再按路径中的目录名（最后一段）匹配，以支持任意层级的 开发文档/ */
@@ -258,8 +258,8 @@ function checkDraft(path: string, content: string, regexSource: string): Issue[]
 		}
 	});
 	if (locations.length === 0) return [];
-	const breakdown = [...counts.entries()].map(([k, v]) => `${k}×${v}`).join("、");
-	const focus = locations.slice(0, 6).map((l) => `L${l.line}：${l.text}`);
+	const breakdown = [...counts.entries()].map(([k, v]) => `${k}×${v}`).join(", ");
+	const focus = locations.slice(0, 6).map((l) => `L${l.line}: ${l.text}`);
 	return [
 		mkIssue({
 			dimension: "draft",

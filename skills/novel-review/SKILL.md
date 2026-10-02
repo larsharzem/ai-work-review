@@ -1,6 +1,6 @@
 ---
 name: novel-review
-description: 小说项目审核与整改工作流。当用户要求"审核小说文件/审一下这个档案/能不能过审/novel-review/整改小说文件/生成修改稿"，或要求对 人物库/世界观/大道库/事件库/技能库/章节库 中的文件做一致性检查、找问题、出整改建议时使用。配合 Obsidian「AI 工作审核」插件（AI Work Review）使用：报告写入 .ai-review/，由插件导入展示。
+description: 小说项目审核与整改工作流。当用户要求"审核小说文件/审一下这个档案/能不能过审/novel-review/整改小说文件/生成修改稿"，或要求对 characters/worldview/principles/events/skills/chapters 中的文件做一致性检查、找问题、出整改建议时使用。配合 Obsidian「AI 工作审核」插件（AI Work Review）使用：报告写入 .ai-review/，由插件导入展示。
 ---
 
 # 小说审核与整改
@@ -9,7 +9,7 @@ description: 小说项目审核与整改工作流。当用户要求"审核小说
 
 ## 载入纪律（每次审核前必做）
 
-1. 先载入 `世界观/00-核心铁律.md`，再载入 `世界观.md`（索引）。
+1. 先载入 `worldview/00-core-rules.md`，再载入 `worldview.md`（索引）。
 2. 按被审文件的内容，按索引的载入条件条件式载入相关世界观细节文件（涉及修炼/等级载入 01、06；涉及势力载入 04；涉及地理/历史/世界真相载入 05；涉及道/交汇载入 07；涉及死亡/轮回载入 02；涉及时间载入 03）。
 3. 审人物档案时，同时载入与该人物有关联的其他人物档案（其关系表里出现的）。
 
@@ -25,25 +25,25 @@ description: 小说项目审核与整改工作流。当用户要求"审核小说
    - **逻辑漏洞**：动机链、因果链、制度规则（如测灵三测、衡天司监控）是否自洽；
    - **章节文件**另审正文质量：叙事逻辑、节奏、人设一致性、伏笔埋设是否按章末备注执行；
    - **模板完整性**顺带复核（插件已做规则检查，你只报规则查不出的深层问题）。
-3. 每个文件写一份报告 JSON 到 `.ai-review/reports/<镜像路径>/<文件名>.json`（先建目录，如 `人物库/男主.md` → `.ai-review/reports/人物库/男主.md.json`）。
+3. 每个文件写一份报告 JSON 到 `.ai-review/reports/<mirrored path>/<file>.json`（先建目录，如 `characters/male-lead.md` → `.ai-review/reports/characters/male-lead.md.json`）。
 4. 最后给用户一个简短汇总：各文件 verdict 与最重要的问题。
 
-### 整改：`/novel-review 整改 <路径>`
+### 整改：`/novel-review 整改 <path>`
 
-1. **先读调整意见**：检查 `.ai-review/adjustments/<镜像路径>/<文件名>.md.json` 是否存在——这是作者在 Obsidian 面板里点「调整」填写的不足点，**优先级最高**，必须逐条满足。
+1. **先读调整意见**：检查 `.ai-review/adjustments/<mirrored path>/<file>.md.json` 是否存在——这是作者在 Obsidian 面板里点「调整」填写的不足点，**优先级最高**，必须逐条满足。
 2. 读取该文件的审核报告 JSON（`.ai-review/reports/…`，可能已归档到 `.ai-review/archive/`）。都不存在则先按上面流程完成审核。
-3. 针对调整意见 + 报告问题，生成**整份修改后的文件内容**（不是片段，不是 diff，不是说明文），写入 `.ai-review/proposals/<镜像路径>/<文件名>.md`。
+3. 针对调整意见 + 报告问题，生成**整份修改后的文件内容**（不是片段，不是 diff，不是说明文），写入 `.ai-review/proposals/<mirrored path>/<file>.md`。
 4. 修改稿要求：保留模板结构与既有格式；只改与调整意见和问题相关的内容，其余原样保留；文风与原文一致；不要在文件里加任何解释性文字。
 5. 告诉用户：回 Obsidian「小说审核」面板，点该文件的「查看修改稿」，对照后「应用替换」。
 
 ### 调整意见协议（novel-review/adjustment@1）
 
-作者点「调整」提交意见后，插件会把意见写入 `.ai-review/adjustments/<镜像路径>/<文件名>.md.json`：
+作者点「调整」提交意见后，插件会把意见写入 `.ai-review/adjustments/<mirrored path>/<file>.md.json`：
 
 ```json
 {
   "schema": "novel-review/adjustment@1",
-  "file": "人物库/男主.md",
+  "file": "characters/male-lead.md",
   "timestamp": "2026-09-05T12:00:00+08:00",
   "note": "作者的不足点与修改要求原文"
 }
@@ -57,7 +57,7 @@ description: 小说项目审核与整改工作流。当用户要求"审核小说
 ```json
 {
   "schema": "novel-review/report@1",
-  "file": "人物库/男主.md",
+  "file": "characters/male-lead.md",
   "reviewer": "zcode",
   "timestamp": "2026-09-05T12:00:00+08:00",
   "verdict": "warn",
@@ -75,14 +75,14 @@ description: 小说项目审核与整改工作流。当用户要求"审核小说
 }
 ```
 
-- `file` 必须是 vault 相对路径（如 `世界观/04-势力阵营.md`）。
+- `file` 必须是 vault 相对路径（如 `worldview/04-factions.md`）。
 - `verdict` 判定标准：**fail** = 违反核心铁律或硬性设定矛盾；**warn** = 待确认内容、软性不一致、逻辑存疑；**pass** = 未发现实质问题。
 - `line` 为大致行号（1 起），便于 Obsidian 里跳转。
 - 没有问题就写空 `issues` 数组 + `"verdict": "pass"`，不要凑数。
 
 ## 铁律（对你自己的约束）
 
-- 绝不修改 `世界观/00-核心铁律.md` 中的铁律来迁就被审文件；矛盾就是问题。
+- 绝不修改 `worldview/00-core-rules.md` 中的铁律来迁就被审文件；矛盾就是问题。
 - 绝不写入 `.ai-review/` 和报告之外的任何文件（不改原文件、不改模板）。
 - 报告必须可执行：problem 说清「和什么矛盾」，suggestion 说清「改成什么」。
 - 引用设定时注明出处文件，方便作者核查。

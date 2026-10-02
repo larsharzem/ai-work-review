@@ -8,4 +8,4 @@ Compare the API doc against code call sites and dev docs；report three mismatch
 
 执行 dev-review 的子命令「接口」，动作 `比对` / Run dev-review subcommand `接口` action `比对`, args: $ARGUMENTS
 
-按技能执行，不要往仓库写模板文件。开发文档固定写在 `docs/开发文档/<模块>/`。
+按技能执行，不要往仓库写模板文件。开发文档固定写在 `docs/dev-docs/<module>/`。

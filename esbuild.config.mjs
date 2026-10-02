@@ -59,6 +59,14 @@ if (mode === "test") {
 		logLevel: "silent",
 	});
 	await esbuild.build({
+		entryPoints: ["src/store.ts"],
+		bundle: true,
+		format: "esm",
+		target: "es2020",
+		outfile: ".test/store.mjs",
+		logLevel: "silent",
+	});
+	await esbuild.build({
 		entryPoints: ["src/dev.ts"],
 		bundle: true,
 		format: "esm",

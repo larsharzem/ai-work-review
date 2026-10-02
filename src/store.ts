@@ -72,6 +72,14 @@ export function effectiveStatus(
 	return { status: candidates[0].s, origin: candidates[0].origin };
 }
 
+/**
+ * "Issues only" filter. A file that carries a replacement proposal stays listed even when its
+ * verdict is "pass": otherwise an earlier Approve (or an AI pass) would hide the proposal for good.
+ */
+export function needsAttention(fr: FileReview | undefined, hasProposal: boolean): boolean {
+	return hasProposal || effectiveStatus(fr).status !== "pass";
+}
+
 export class ReviewStore {
 	data: StoreData = { version: 1, files: {} };
 
@@ -132,7 +140,7 @@ export class ReviewStore {
 		fr.ruleIssues = issues;
 		fr.lastRuleCheck = Date.now();
 		if (prev !== status) {
-			fr.history.push({ t: Date.now(), action: "规则检查", detail: `${prev} → ${status}` });
+			fr.history.push({ t: Date.now(), action: "rule-check", detail: `${prev} → ${status}` });
 		}
 	}
 
@@ -150,16 +158,17 @@ export class ReviewStore {
 		fr.aiSummary = summary;
 		fr.aiReportHash = reportHash;
 		fr.lastAiReport = timestampMs;
-		fr.history.push({ t: Date.now(), action: "导入AI报告", detail: verdict });
+		fr.history.push({ t: Date.now(), action: "ai-report-imported", detail: verdict });
 	}
 
-	applyUserVerdict(path: string, verdict: UserVerdict | undefined, note?: string) {
+	applyUserVerdict(path: string, verdict: UserVerdict | undefined, note?: string, detail?: string) {
 		const fr = this.get(path);
 		fr.userVerdict = verdict;
 		fr.userNote = verdict ? note : undefined;
 		fr.history.push({
 			t: Date.now(),
-			action: verdict === "pass" ? "人工标记通过" : verdict === "fail" ? "人工调整（提交意见）" : "清除人工裁决",
+			action: verdict === "pass" ? "user-approved" : verdict === "fail" ? "user-adjustment-requested" : "user-verdict-cleared",
+			...(detail ? { detail } : {}),
 		});
 	}
 
@@ -173,7 +182,7 @@ export class ReviewStore {
 		fr.ruleIssues = [];
 		fr.lastAiReport = undefined;
 		fr.userVerdict = undefined;
-		fr.history.push({ t: Date.now(), action: "应用AI修改稿", detail: `第 ${fr.fixedCount} 次整改，待重新检查` });
+		fr.history.push({ t: Date.now(), action: "proposal-applied", detail: `fix round ${fr.fixedCount} applied, re-check pending` });
 	}
 
 	/** 供渲染的排序：严重者优先，再按路径 */
@@ -184,7 +193,7 @@ export class ReviewStore {
 			const ra = STATUS_ORDER[sa.status] ?? 9;
 			const rb = STATUS_ORDER[sb.status] ?? 9;
 			if (ra !== rb) return ra - rb;
-			return a.localeCompare(b, "zh-Hans-CN");
+			return a.localeCompare(b);
 		});
 	}
 }

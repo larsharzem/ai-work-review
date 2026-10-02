@@ -10,6 +10,19 @@ import {
 	BUG_HEADING,
 	CHANGE_HEADING,
 	SUPPLEMENT_HEADING,
+	STATUS_FIELD,
+	DELIVERY_DATE_FIELD,
+	TARGET_DIR_FIELD,
+	ST_ADJUSTING,
+	ST_APPROVED,
+	ST_AWAITING_REVIEW,
+	ST_BUGFIX_OPEN,
+	ST_CHANGE_OPEN,
+	ST_CLOSED,
+	ST_COMPLETED,
+	ST_DELIVERED,
+	ST_IN_DEVELOPMENT,
+	NOVEL_VAULT_MARKERS,
 	extractFieldValue,
 	isAdjustReqStatus,
 	isApprovedReqStatus,
@@ -130,7 +143,7 @@ export default class AiWorkReviewPlugin extends Plugin {
 
 	/** 代码项目：模板在技能内，不写进仓库。小说库仍在根目录放需求/交付模板。 */
 	private async prepareDevLayout(): Promise<void> {
-		const markerNames = ["pubspec.yaml", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", "人物库", "章节库"];
+		const markerNames = ["pubspec.yaml", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ...NOVEL_VAULT_MARKERS];
 		const topEntries: string[] = [];
 		for (const name of markerNames) {
 			if (await this.app.vault.adapter.exists(name)) topEntries.push(name);
@@ -147,11 +160,11 @@ export default class AiWorkReviewPlugin extends Plugin {
 
 		if (this.settings.devReqFolder) {
 			await this.ensureFolder(this.settings.devReqFolder);
-			await this.ensureFile(`${this.settings.devReqFolder}/需求模板.md`, DEV_DOC_TEMPLATE);
+			await this.ensureFile(`${this.settings.devReqFolder}/requirements-template.md`, DEV_DOC_TEMPLATE);
 		}
 		if (this.settings.devDeliverFolder) {
 			await this.ensureFolder(this.settings.devDeliverFolder);
-			await this.ensureFile(`${this.settings.devDeliverFolder}/交付模板.md`, DEV_DOC_TEMPLATE);
+			await this.ensureFile(`${this.settings.devDeliverFolder}/delivery-template.md`, DEV_DOC_TEMPLATE);
 		}
 	}
 
@@ -313,6 +326,11 @@ export default class AiWorkReviewPlugin extends Plugin {
 				problem: it.problem,
 				suggestion: it.suggestion,
 			}));
+			// A newer report supersedes an earlier "Approve": otherwise the user verdict would hide the new verdict
+			// (and any proposal) under "Issues only" forever. "Adjust" verdicts keep their note for the fix prompt.
+			if (existing.userVerdict === "pass") {
+				this.store.applyUserVerdict(report.file, undefined, undefined, "superseded by a newer AI report");
+			}
 			this.store.applyAiReport(report.file, report.verdict, issues, report.summary, hash, Number.isNaN(ts) ? Date.now() : ts);
 			imported++;
 			if (this.settings.archiveAfterIngest) await this.archive(abs);
@@ -399,28 +417,28 @@ export default class AiWorkReviewPlugin extends Plugin {
 	}
 
 	async setMarkdownStatus(path: string, status: string): Promise<void> {
-		await this.patchMarkdown(path, (c) => setFieldValue(c, "状态", status));
+		await this.patchMarkdown(path, (c) => setFieldValue(c, STATUS_FIELD, status));
 	}
 
 	async approveRequirement(path: string): Promise<void> {
 		this.store.applyUserVerdict(path, "pass");
 		await this.removeAdjustment(path);
-		let next = "已通过";
+		let next = ST_APPROVED;
 		if (this.isReqPath(path)) {
 			const file = this.app.vault.getAbstractFileByPath(path);
 			let current = "";
 			let delivered = false;
 			if (file instanceof TFile) {
 			const content = await this.app.vault.cachedRead(file);
-			current = extractFieldValue(content, "状态") ?? "";
-			delivered = !!(extractFieldValue(content, "交付日期") ?? "").trim() || hasPendingChange(content);
+			current = extractFieldValue(content, STATUS_FIELD) ?? "";
+			delivered = !!(extractFieldValue(content, DELIVERY_DATE_FIELD) ?? "").trim() || hasPendingChange(content);
 			}
 			next = nextApproveStatus(current, delivered);
 			await this.setMarkdownStatus(path, next);
 		}
 		await this.saveAll();
 		new Notice(
-			t(next === "完结" ? "notice.reqClosed" : next === "变更中" ? "notice.changeFinalized" : "notice.reqApproved", { path }),
+			t(next === ST_CLOSED ? "notice.reqClosed" : next === ST_CHANGE_OPEN ? "notice.changeFinalized" : "notice.reqApproved", { path }),
 		);
 		this.refreshView();
 	}
@@ -433,8 +451,8 @@ export default class AiWorkReviewPlugin extends Plugin {
 			const stamp = nowStamp();
 			let prevStatus = "";
 			const ok = await this.patchMarkdown(path, (c) => {
-				prevStatus = extractFieldValue(c, "状态") ?? "";
-				return upsertSupplementSection(setFieldValue(c, "状态", "调整中"), note, stamp);
+				prevStatus = extractFieldValue(c, STATUS_FIELD) ?? "";
+				return upsertSupplementSection(setFieldValue(c, STATUS_FIELD, ST_ADJUSTING), note, stamp);
 			});
 			if (ok) this.store.pushUndo({ path, kind: "req", prevStatus, stamp, note });
 		}
@@ -451,8 +469,8 @@ export default class AiWorkReviewPlugin extends Plugin {
 			const stamp = nowStamp();
 			let prevStatus = "";
 			const ok = await this.patchMarkdown(path, (c) => {
-				prevStatus = extractFieldValue(c, "状态") ?? "";
-				return upsertBugSection(setFieldValue(c, "状态", "整改中"), note, stamp);
+				prevStatus = extractFieldValue(c, STATUS_FIELD) ?? "";
+				return upsertBugSection(setFieldValue(c, STATUS_FIELD, ST_BUGFIX_OPEN), note, stamp);
 			});
 			if (ok) this.store.pushUndo({ path, kind: "bug", prevStatus, stamp, note });
 		}
@@ -472,8 +490,8 @@ export default class AiWorkReviewPlugin extends Plugin {
 			const stamp = nowStamp();
 			let prevStatus = "";
 			const ok = await this.patchMarkdown(path, (c) => {
-				prevStatus = extractFieldValue(c, "状态") ?? "";
-				return upsertChangeSection(setFieldValue(c, "状态", "调整中"), note, stamp);
+				prevStatus = extractFieldValue(c, STATUS_FIELD) ?? "";
+				return upsertChangeSection(setFieldValue(c, STATUS_FIELD, ST_ADJUSTING), note, stamp);
 			});
 			if (ok) this.store.pushUndo({ path, kind: "change", prevStatus, stamp, note });
 		}
@@ -509,7 +527,7 @@ export default class AiWorkReviewPlugin extends Plugin {
 				mismatch = true;
 				return c;
 			}
-			return setFieldValue(res.content, "状态", entry.prevStatus || "待审核");
+			return setFieldValue(res.content, STATUS_FIELD, entry.prevStatus || ST_AWAITING_REVIEW);
 		});
 		this.store.popUndo(path);
 		if (!ok || !removed || mismatch) {
@@ -521,7 +539,7 @@ export default class AiWorkReviewPlugin extends Plugin {
 		await this.removeBridgeFile(this.bridgeAdjustPath(path));
 		this.store.applyUserVerdict(path, undefined);
 		await this.saveAll();
-		new Notice(t("notice.undone", { path, status: entry.prevStatus || "待审核" }));
+		new Notice(t("notice.undone", { path, status: entry.prevStatus || ST_AWAITING_REVIEW }));
 		this.refreshView();
 	}
 
@@ -543,14 +561,14 @@ export default class AiWorkReviewPlugin extends Plugin {
 			let current = "";
 			let content = "";
 			if (file instanceof TFile) content = await this.app.vault.cachedRead(file);
-			current = extractFieldValue(content, "状态") ?? "";
-			const next = current.includes("整改中") || current.includes("完结") || current.includes("已完成")
-				? "完结"
-				: current.includes("调整") && hasPendingChange(content)
-					? "调整中" // 对过代码的调整中：变更还没定稿落地，保持调整中
-					: current.includes("变更中") || current.includes("开发中")
-						? "开发中"
-						: "待审核";
+			current = extractFieldValue(content, STATUS_FIELD) ?? "";
+			const next = current.includes(ST_BUGFIX_OPEN) || current.includes(ST_CLOSED) || current.includes(ST_COMPLETED)
+				? ST_CLOSED
+				: current.includes(ST_ADJUSTING) && hasPendingChange(content)
+					? ST_ADJUSTING // adjusting after code exists: the change is not finalized and landed yet, stay adjusting
+					: current.includes(ST_CHANGE_OPEN) || current.includes(ST_IN_DEVELOPMENT)
+						? ST_IN_DEVELOPMENT
+						: ST_AWAITING_REVIEW;
 			await this.setMarkdownStatus(path, next);
 		}
 		await this.saveAll();
@@ -577,7 +595,7 @@ export default class AiWorkReviewPlugin extends Plugin {
 			t("prompt.reviewIntro"),
 			...todo.map((p) => `- ${p}`),
 			"",
-			t("prompt.contextHintLabel") + "：" + this.settings.aiContextHint,
+			t("prompt.contextHintLabel") + ": " + this.settings.aiContextHint,
 			t("prompt.reviewSteps"),
 		].join("\n");
 		await navigator.clipboard.writeText(prompt);
@@ -599,10 +617,10 @@ export default class AiWorkReviewPlugin extends Plugin {
 			...todo.map((p) => {
 				const note = this.store.data.files[p].userNote ?? "";
 				const brief = note.length > 60 ? `${note.slice(0, 60)}…` : note;
-				return `- ${p}（${brief}）`;
+				return `- ${p} (${brief})`;
 			}),
 			"",
-			t("prompt.contextHintLabel") + "：" + this.settings.aiContextHint,
+			t("prompt.contextHintLabel") + ": " + this.settings.aiContextHint,
 			t("prompt.fixSteps"),
 		].join("\n");
 		await navigator.clipboard.writeText(prompt);
@@ -616,9 +634,9 @@ export default class AiWorkReviewPlugin extends Plugin {
 			const content = await this.app.vault.cachedRead(f);
 			out.push({
 				path: f.path,
-				status: extractFieldValue(content, "状态"),
+				status: extractFieldValue(content, STATUS_FIELD),
 				target:
-					extractFieldValue(content, "目标目录") ||
+					extractFieldValue(content, TARGET_DIR_FIELD) ||
 					targetFolderOf(
 						f.path,
 						isUnderNamedFolder(f.path, this.settings.devDocFolder || DEFAULT_DEV_DOC_FOLDER)
@@ -633,11 +651,11 @@ export default class AiWorkReviewPlugin extends Plugin {
 
 	async copyReqAdjustPrompt(): Promise<void> {
 		const all = await this.listRequirementFiles();
-		const bugs = all.filter((r) => (r.status ?? "").includes("整改中"));
-		const changes = all.filter((r) => (r.status ?? "").includes("变更中"));
+		const bugs = all.filter((r) => (r.status ?? "").includes(ST_BUGFIX_OPEN));
+		const changes = all.filter((r) => (r.status ?? "").includes(ST_CHANGE_OPEN));
 		const adjs = all.filter(
 			(r) =>
-				(isAdjustReqStatus(r.status) || (!!r.note && !isBugFixReqStatus(r.status) && !(r.status ?? "").includes("变更中"))) &&
+				(isAdjustReqStatus(r.status) || (!!r.note && !isBugFixReqStatus(r.status) && !(r.status ?? "").includes(ST_CHANGE_OPEN))) &&
 				!bugs.includes(r) &&
 				!changes.includes(r),
 		);
@@ -647,13 +665,13 @@ export default class AiWorkReviewPlugin extends Plugin {
 		}
 		const line = (r: { path: string; target: string; note?: string }) => {
 			const note = r.note ? `\n  ${t("note.prefix")}${r.note}` : "";
-			return `- \`${r.path}\`（${t("dev.targetFolder")}：${r.target || "—"}）${note}`;
+			return `- \`${r.path}\` (${t("dev.targetFolder")}: ${r.target || "—"})${note}`;
 		};
 		const prompt = [
 			...(adjs.length ? [t("prompt.reqAdjustIntro"), ...adjs.map(line), ""] : []),
 			...(changes.length ? [t("prompt.reqChangeIntro"), ...changes.map(line), ""] : []),
 			...(bugs.length ? [t("prompt.reqBugIntro"), ...bugs.map(line), ""] : []),
-			t("prompt.contextHintLabel") + "：" + this.settings.aiContextHint,
+			t("prompt.contextHintLabel") + ": " + this.settings.aiContextHint,
 		].join("\n");
 		await navigator.clipboard.writeText(prompt);
 		new Notice(t("notice.reqAdjustCopied", { n: adjs.length + bugs.length + changes.length }));
@@ -663,15 +681,15 @@ export default class AiWorkReviewPlugin extends Plugin {
 	async copyChangeLandPrompt(path: string): Promise<void> {
 		const all = await this.listRequirementFiles();
 		const r = all.find((x) => x.path === path);
-		if (!r || !(r.status ?? "").includes("变更中")) {
+		if (!r || !(r.status ?? "").includes(ST_CHANGE_OPEN)) {
 			new Notice(t("notice.changeLandNone", { path }));
 			return;
 		}
 		const prompt = [
 			t("prompt.reqChangeIntro"),
-			`- \`${r.path}\`（${t("dev.targetFolder")}：${r.target || "—"}）`,
+			`- \`${r.path}\` (${t("dev.targetFolder")}: ${r.target || "—"})`,
 			"",
-			t("prompt.contextHintLabel") + "：" + this.settings.aiContextHint,
+			t("prompt.contextHintLabel") + ": " + this.settings.aiContextHint,
 		].join("\n");
 		await navigator.clipboard.writeText(prompt);
 		new Notice(t("notice.changeLandCopied", { path }));
@@ -680,7 +698,13 @@ export default class AiWorkReviewPlugin extends Plugin {
 	async copyReqStartPrompt(): Promise<void> {
 		const todo = (await this.listRequirementFiles()).filter((r) => {
 			const s = r.status ?? "";
-			return isApprovedReqStatus(s) && !s.includes("开发中") && !s.includes("已交付") && !s.includes("变更中") && !s.includes("整改中");
+			return (
+				isApprovedReqStatus(s) &&
+				!s.includes(ST_IN_DEVELOPMENT) &&
+				!s.includes(ST_DELIVERED) &&
+				!s.includes(ST_CHANGE_OPEN) &&
+				!s.includes(ST_BUGFIX_OPEN)
+			);
 		});
 		if (todo.length === 0) {
 			new Notice(t("notice.reqStartNone"));
@@ -688,9 +712,9 @@ export default class AiWorkReviewPlugin extends Plugin {
 		}
 		const prompt = [
 			t("prompt.reqStartIntro"),
-			...todo.map((r) => `- \`${r.path}\`（${t("dev.targetFolder")}：${r.target || "—"}）`),
+			...todo.map((r) => `- \`${r.path}\` (${t("dev.targetFolder")}: ${r.target || "—"})`),
 			"",
-			t("prompt.contextHintLabel") + "：" + this.settings.aiContextHint,
+			t("prompt.contextHintLabel") + ": " + this.settings.aiContextHint,
 		].join("\n");
 		await navigator.clipboard.writeText(prompt);
 		new Notice(t("notice.reqStartCopied", { n: todo.length }));

@@ -16,8 +16,8 @@ description: 查看 /novel-review 工作流说明书（中文版）
 
 | 命令 | 作用 |
 |---|---|
-| `/novel-review 审核 <路径\|全部>` | 深度审核指定文件（或全部），每份报告写入 `.ai-review/reports/<镜像路径>/<文件名>.json` |
-| `/novel-review 整改 <路径>` | 按「调整意见+审核报告」生成整份修改稿，写入 `.ai-review/proposals/<镜像路径>/<文件名>.md` |
+| `/novel-review 审核 <路径\|全部>` | 深度审核指定文件（或全部），每份报告写入 `.ai-review/reports/<mirrored path>/<file>.json` |
+| `/novel-review 整改 <path>` | 按「调整意见+审核报告」生成整份修改稿，写入 `.ai-review/proposals/<mirrored path>/<file>.md` |
 | `/novel-review:info-cn` / `:info-en` | 显示本说明书（中/英文） |
 
 ## 文件去向
@@ -39,7 +39,7 @@ description: 查看 /novel-review 工作流说明书（中文版）
 ## 核心规则
 
 1. **AI 绝不直接改原文件**，一切修改走修改稿 + diff 确认。
-2. 审核前必须先载入 `世界观/00-核心铁律.md` 与 `世界观.md` 索引，再按需载入细节文件。
+2. 审核前必须先载入 `worldview/00-core-rules.md` 与 `worldview.md` 索引，再按需载入细节文件。
 3. verdict 标准：fail=违反铁律/硬矛盾；warn=待确认/软性不一致；pass=无实质问题。
 4. 报告必须可执行：problem 说清和什么矛盾，suggestion 说清改成什么。
 

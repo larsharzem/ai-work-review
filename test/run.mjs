@@ -1,16 +1,24 @@
 /**
- * 规则检查器 / 报告解析 / diff 的验证脚本（node 直接运行，不依赖 Obsidian）。
- * 用当前 vault 的真实文件跑一遍规则检查，并在末尾输出「模拟审核结果」。
+ * Unit checks for the rule engine, the report parser, the diff and the dev-mode helpers.
+ * Plain node, no Obsidian. Runs against a generated fixture vault (see fixture-vault.mjs),
+ * so it needs no configured vault and never touches real notes.
+ *
+ * The dev-mode sections spell the document vocabulary out as literals on purpose: they pin
+ * what the plugin writes into the docs (statuses, field names, section headings), so a rename
+ * in src/dev.ts has to be mirrored here deliberately.
  */
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { checkFile, extractTemplateSpec, isInScope, isTemplateLike, matchingFolderPrefix, checkIndexFile, DEFAULT_DRAFT_REGEX } from "../.test/rules.mjs";
 import { parseAiReport } from "../.test/ingest.mjs";
 import { diffLines, diffStats } from "../.test/diff.mjs";
 import { matchTasks, collectDevTasks, extractFieldValue, taskState, stripDatePrefix, shouldUseProjectDocsLayout, isNovelDefaultDevFolders, isUnderNamedFolder, targetFolderOf, setFieldValue, upsertSupplementSection, upsertBugSection, upsertChangeSection, hasPendingChange, countBugEntries, removeLatestSectionEntry, nowStamp, todayStamp, isBugFixReqStatus, isApprovedReqStatus, nextApproveStatus, canRecordRequirementChange, canRecordBug, devAuthorActions } from "../.test/dev.mjs";
-import { vaultRootOrExit } from "./vault-root.mjs";
+import { ReviewStore, effectiveStatus, needsAttention } from "../.test/store.mjs";
+import { createFixtureVault } from "./fixture-vault.mjs";
 
-const vaultRoot = vaultRootOrExit(); // 开发 vault：环境变量 AI_REVIEW_VAULT 或 vaults.local.json 首项
+const fixture = createFixtureVault();
+const vaultRoot = fixture.root;
+process.on("exit", () => fixture.cleanup());
 
 let failed = 0;
 function assert(cond, msg) {
@@ -37,11 +45,11 @@ const allMd = walkMd(vaultRoot);
 const allPaths = allMd.map((p) => relative(vaultRoot, p).split("\\").join("/"));
 
 const TEMPLATE_MAP = {
-	人物库: "人物库/人物模板.md",
-	事件库: "事件库/事件模板.md",
-	技能库: "技能库/技能模板.md",
-	章节库: "章节库/章节模板.md",
-	大道库: "大道库/_模板.md",
+	characters: "characters/character-template.md",
+	events: "events/event-template.md",
+	skills: "skills/skill-template.md",
+	chapters: "chapters/chapter-template.md",
+	principles: "principles/_template.md",
 };
 const templates = {};
 for (const tplPath of Object.values(TEMPLATE_MAP)) {
@@ -49,323 +57,365 @@ for (const tplPath of Object.values(TEMPLATE_MAP)) {
 }
 const ctx = { templateMap: TEMPLATE_MAP, templates, draftMarkerRegex: DEFAULT_DRAFT_REGEX };
 
-console.log("\n== 1. 模板解析 ==");
-const tpl = templates["人物库/人物模板.md"];
-assert(tpl.sections.length >= 8, `人物模板解析出 ${tpl.sections.length} 个章节（≥8）`);
-assert(tpl.fields.some((f) => f.name === "姓名"), "人物模板含字段「姓名」");
-const daoTpl = templates["大道库/_模板.md"];
-assert(daoTpl.fields.some((f) => f.name === "道谱编号"), "大道模板识别引用块字段「道谱编号」");
+console.log("\n== 1. Template parsing ==");
+const tpl = templates["characters/character-template.md"];
+assert(tpl.sections.length >= 8, `character template parsed into ${tpl.sections.length} sections (>=8)`);
+assert(tpl.fields.some((f) => f.name === "Name"), 'character template has the field "Name"');
+const principleTpl = templates["principles/_template.md"];
+assert(principleTpl.fields.some((f) => f.name === "Principle ID"), 'principle template picks up the blockquote field "Principle ID"');
 
-console.log("\n== 2. 模板检查（合成样例）==");
+console.log("\n== 2. Template check (synthetic) ==");
 {
 	const badContent = [
-		"# 测试人物",
-		"## 核心身份",
-		"- **姓名**：",
-		"- **角色定位**：主角 / 女主 / 反派 / 导师 / 挚友 / 路人NPC",
+		"# Test character",
+		"## Core identity",
+		"- **Name**:",
+		"- **Role**: protagonist / heroine / villain / mentor / confidant / extra",
 	].join("\n");
-	const res = checkFile("人物库/测试人物.md", badContent, allPaths, ctx);
+	const res = checkFile("characters/test-character.md", badContent, allPaths, ctx);
 	const kinds = res.issues.map((i) => i.problem);
-	assert(kinds.some((k) => k.includes("缺少模板章节「外在设定」")), "检出缺失章节「外在设定」");
-	assert(kinds.some((k) => k.includes("字段「姓名」疑似未填写")), "检出空字段「姓名」");
-	assert(kinds.some((k) => k.includes("字段「角色定位」疑似未填写")), "检出与模板占位相同的字段「角色定位」");
-	assert(res.status === "warn", `合成样例状态为 warn（实际 ${res.status}）`);
+	assert(kinds.some((k) => k.includes('Missing template section "Appearance"')), 'missing section "Appearance" detected');
+	assert(kinds.some((k) => k.includes('Field "Name" looks unfilled')), 'empty field "Name" detected');
+	assert(kinds.some((k) => k.includes('Field "Role" looks unfilled')), 'field "Role" still holding the template placeholder detected');
+	assert(res.status === "warn", `synthetic sample is warn (got ${res.status})`);
 }
 
-console.log("\n== 3. 草案标记扫描 ==");
+console.log("\n== 3. Draft marker scan ==");
 {
-	const maleLead = readFileSync(join(vaultRoot, "人物库/男主.md"), "utf8");
-	const res = checkFile("人物库/男主.md", maleLead, allPaths, ctx);
+	const maleLead = readFileSync(join(vaultRoot, "characters/male-lead.md"), "utf8");
+	const res = checkFile("characters/male-lead.md", maleLead, allPaths, ctx);
 	const draft = res.issues.find((i) => i.dimension === "draft");
-	assert(!!draft && draft.locations.length >= 5, `男主.md 检出 ${draft?.locations.length ?? 0} 处草案/待定标记（≥5）`);
-	const clean = checkFile("人物库/x.md", "# 干净文件\n- **姓名**：张三\n", allPaths, ctx);
-	assert(!clean.issues.some((i) => i.dimension === "draft"), "干净文件无草案标记误报");
+	assert(!!draft && draft.locations.length >= 5, `male-lead.md has ${draft?.locations.length ?? 0} draft/pending markers (>=5)`);
+	const clean = checkFile("characters/x.md", "# clean file\n- **Name**: Shen Yuan\n", allPaths, ctx);
+	assert(!clean.issues.some((i) => i.dimension === "draft"), "clean file raises no false draft marker");
 }
 
-console.log("\n== 4. 索引一致性 ==");
+console.log("\n== 4. Index consistency ==");
 {
-	// 合成样例：确定性验证「缺收录」「死链」两个方向
-	const syntheticPaths = ["世界观.md", "世界观/00-核心.md", "世界观/01-力量.md", "世界观/02-轮回.md"];
-	const syntheticIdx = "| `世界观/00-核心.md` | x | y |\n| `世界观/01-力量.md` | x | y |\n| `世界观/09-幽灵.md` | x | y |\n";
-	const synIssues = checkIndexFile("世界观.md", syntheticIdx, syntheticPaths);
-	assert(synIssues.some((i) => i.severity === "error" && i.problem.includes("09-幽灵")), "合成：索引死链检出 error");
-	assert(synIssues.some((i) => i.problem.includes("02-轮回")), "合成：缺收录文件被检出");
+	// Synthetic sample: pins both directions — a dead link and a file the index forgot
+	const syntheticPaths = ["worldview.md", "worldview/00-core.md", "worldview/01-power.md", "worldview/02-rebirth.md"];
+	const syntheticIdx = "| `worldview/00-core.md` | x | y |\n| `worldview/01-power.md` | x | y |\n| `worldview/09-ghost.md` | x | y |\n";
+	const synIssues = checkIndexFile("worldview.md", syntheticIdx, syntheticPaths);
+	assert(synIssues.some((i) => i.severity === "error" && i.problem.includes("09-ghost")), "synthetic: dead index link is an error");
+	assert(synIssues.some((i) => i.problem.includes("02-rebirth")), "synthetic: file missing from the index is reported");
 
-	// 真实索引：自洽性（检出的缺收录文件必须确实不在索引文本里），且无死链
-	const idx = readFileSync(join(vaultRoot, "世界观.md"), "utf8");
-	const issues = checkIndexFile("世界观.md", idx, allPaths);
-	const selfConsistent = issues
-		.filter((i) => i.dimension === "index" && i.severity === "warn")
-		.every((i) => {
-			const f = i.problem.split("：").pop();
-			return f && !idx.includes(f);
-		});
-	assert(selfConsistent, "真实索引：检出的缺收录项确实不在索引文本中（自洽）");
+	// Fixture index: self-consistent (every file reported as missing really is absent from the text) and free of dead links
+	const idx = readFileSync(join(vaultRoot, "worldview.md"), "utf8");
+	const issues = checkIndexFile("worldview.md", idx, allPaths);
+	const missing = issues.filter((i) => i.dimension === "index" && i.severity === "warn");
+	assert(missing.length === 1, `fixture index forgets exactly one file (${missing.length})`);
+	const selfConsistent = missing.every((i) => {
+		const f = i.problem.split(": ").pop();
+		return f && !idx.includes(f);
+	});
+	assert(selfConsistent, "fixture index: reported missing entries really are absent from the index text");
 	const ghost = issues.filter((i) => i.severity === "error");
-	assert(ghost.length === 0, `索引无指向不存在文件的死链（${ghost.length} 条 error）`);
+	assert(ghost.length === 0, `index has no links to missing files (${ghost.length} errors)`);
 }
 
-console.log("\n== 5. 引用完整性（全库扫描）==");
+console.log("\n== 5. Reference integrity (whole vault) ==");
 {
 	let broken = 0;
 	for (const p of allPaths) {
-		if (!isInScope(p, ["人物库", "事件库", "技能库", "章节库", "大道库", "世界观"], ["大纲.md", "世界观.md"])) continue;
+		if (!isInScope(p, ["characters", "events", "skills", "chapters", "principles", "worldview"], ["outline.md", "worldview.md"])) continue;
 		const content = readFileSync(join(vaultRoot, p), "utf8");
 		const res = checkFile(p, content, allPaths, ctx);
 		for (const i of res.issues) {
 			if (i.dimension === "reference") {
 				broken++;
-				console.log(`    · ${p} → ${i.problem}（L${i.line}）`);
+				console.log(`    · ${p} → ${i.problem} (L${i.line})`);
 			}
 		}
 	}
-	console.log(`  共检出 ${broken} 条可疑引用（见上，如为误报可忽略或调整规则）`);
+	assert(broken === 1, `found ${broken} suspicious reference (the fixture plants exactly one)`);
 }
 
-console.log("\n== 6. AI 报告解析 ==");
+console.log("\n== 6. AI report parsing ==");
 {
 	const ok = parseAiReport(
 		JSON.stringify({
 			schema: "novel-review/report@1",
-			file: "人物库/男主.md",
+			file: "characters/male-lead.md",
 			verdict: "warn",
-			summary: "总体一致",
-			issues: [{ severity: "error", problem: "与铁律冲突", line: 12 }],
+			summary: "broadly consistent",
+			issues: [{ severity: "error", problem: "conflicts with a hard rule", line: 12 }],
 		}),
 	);
-	assert(!!ok.report && ok.report.issues[0].severity === "error", "合法报告解析成功");
-	assert(!!parseAiReport(JSON.stringify({ verdict: "warn" })).error, "缺少 file 字段被拒绝");
-	assert(!!parseAiReport(JSON.stringify({ file: "a.md", verdict: "bad" })).error, "非法 verdict 被拒绝");
-	assert(!!parseAiReport("{oops").error, "坏 JSON 被拒绝");
+	assert(!!ok.report && ok.report.issues[0].severity === "error", "valid report parses");
+	assert(!!parseAiReport(JSON.stringify({ verdict: "warn" })).error, "report without file is rejected");
+	assert(!!parseAiReport(JSON.stringify({ file: "a.md", verdict: "bad" })).error, "illegal verdict is rejected");
+	assert(!!parseAiReport("{oops").error, "broken JSON is rejected");
 }
 
 console.log("\n== 7. diff ==");
 {
 	const rows = diffLines(["a", "b", "c"], ["a", "B", "c", "d"]);
 	const st = diffStats(rows);
-	assert(st.added === 2 && st.removed === 1, `diff 统计 +2/-1（实际 +${st.added}/-${st.removed}）`);
-	assert(rows[0].type === "same" && rows[1].type === "del" && rows[2].type === "add", "diff 行类型正确");
+	assert(st.added === 2 && st.removed === 1, `diff counts +2/-1 (got +${st.added}/-${st.removed})`);
+	assert(rows[0].type === "same" && rows[1].type === "del" && rows[2].type === "add", "diff row types are right");
 }
 
-console.log("\n== 8. 开发模式：任务配对 ==");
+console.log("\n== 8. Dev mode: task pairing ==");
 {
-	assert(stripDatePrefix("2026-09-07-登录接口") === "登录接口", "日期前缀剥离正确");
+	assert(stripDatePrefix("2026-09-07-login-api") === "login-api", "date prefix stripped");
 	const reqs = [
-		{ path: "开发需求/2026-09-07-登录接口.md", content: "- **状态**：已交付\n- **来源**：对话\n" },
-		{ path: "开发需求/2026-09-08-导出功能.md", content: "- **状态**：待开发\n" },
+		{ path: "dev-requirements/2026-09-07-login-api.md", content: "- **Status**: delivered\n- **Source**: chat\n" },
+		{ path: "dev-requirements/2026-09-08-export.md", content: "- **Status**: awaiting-build\n" },
 	];
 	const dels = [
-		{ path: "开发交付/2026-09-07-登录接口.md", content: "- **状态**：待审核\n- **交付日期**：2026-09-07\n" },
+		{ path: "dev-deliveries/2026-09-07-login-api.md", content: "- **Status**: awaiting-review\n- **Delivery date**: 2026-09-07\n" },
 	];
 	const tasks = matchTasks(reqs, dels);
-	assert(tasks.length === 2, `任务数 ${tasks.length}（需求 2 + 交付 1 合并为 2 个任务）`);
-	const t1 = tasks.find((x) => x.slug === "登录接口");
-	assert(!!t1 && t1.reqPath && t1.deliverPath, "登录接口：需求与交付正确配对");
-	assert(t1?.deliverStatus === "待审核" && t1?.deliverDate === "2026-09-07", "交付单字段解析正确");
+	assert(tasks.length === 2, `${tasks.length} tasks (2 requirements + 1 delivery merge into 2)`);
+	const t1 = tasks.find((x) => x.slug === "login-api");
+	assert(!!t1 && t1.reqPath && t1.deliverPath, "login-api: requirement and delivery paired");
+	assert(t1?.deliverStatus === "awaiting-review" && t1?.deliverDate === "2026-09-07", "delivery fields parsed");
 	const s1 = taskState(t1);
-	assert(s1.kind === "wait" && s1.label === "待审核", `登录接口任务状态=wait/待审核（实际 ${s1.kind}/${s1.label}）`);
-	const t2 = tasks.find((x) => x.slug === "导出功能");
+	assert(s1.kind === "wait" && s1.label === "awaiting-review", `login-api state=wait/awaiting-review (got ${s1.kind}/${s1.label})`);
+	const t2 = tasks.find((x) => x.slug === "export");
 	const s2 = taskState(t2);
-	assert(s2.kind === "wait" && s2.label === "待开发", `未交付任务回落到需求状态（实际 ${s2.kind}/${s2.label}）`);
-	assert(extractFieldValue("- **交付日期**：2026-09-07\n", "交付日期") === "2026-09-07", "字段值提取正确");
-	// 字段留空是交付前的常态：正则必须行内匹配，否则跨行吞掉下一行（曾导致面板把待审核文档误判为已交付）
-	const emptyTpl = "## 基本信息\n- **状态**：待审核\n- **模块**：\n- **目标目录**：lib/features/finance\n- **提出日期**：\n- **交付日期**：\n\n## 需求描述\nX\n";
-	assert(extractFieldValue(emptyTpl, "交付日期") === "", "留空字段返回空串，不吞下一行");
-	assert(extractFieldValue(emptyTpl, "提出日期") === "", "留空字段不吞后面的同节字段");
-	assert(extractFieldValue(emptyTpl, "模块") === "" && extractFieldValue(emptyTpl, "目标目录") === "lib/features/finance", "留空字段后紧邻字段仍可正确取值");
-	assert(extractFieldValue("- **交付日期**：\r\n\r\n## 需求描述", "交付日期") === "", "CRLF 留空字段同样不跨行");
-	assert(extractFieldValue("- **状态**: 待审核\n", "状态") === "待审核", "半角冒号仍可取值");
-	assert(extractFieldValue("  - **状态**：开发中\n", "状态") === "开发中", "缩进子项仍可取值");
-	assert(extractFieldValue("- **说明**：改 *三处* 文案\n", "说明") === "改 三处 文案", "值内的强调标记仍被剥离");
-	assert(extractFieldValue("- **交付**：x\n- **交付日期**：2026-09-07\n", "交付日期") === "2026-09-07", "字段名互为前缀时不误匹配");
-	assert(extractFieldValue("- **状态**：待审核\n\n## 缺陷记录\n- **状态**：整改中\n", "状态") === "待审核", "同名字段取首个");
-	const wroteEmpty = setFieldValue(emptyTpl, "模块", "finance");
-	assert(wroteEmpty.includes("- **模块**：finance"), "留空字段可写回新值");
-	assert(wroteEmpty.includes("- **目标目录**：lib/features/finance"), "写回留空字段不吞下一行");
-	const wroteTail = setFieldValue(emptyTpl, "交付日期", "2026-09-10");
-	assert(wroteTail.includes("- **交付日期**：2026-09-10") && wroteTail.includes("## 需求描述"), "写回末位留空字段不吞空行与章节标题");
-	assert(setFieldValue(emptyTpl, "状态", "已通过").includes("- **状态**：已通过"), "已有值字段写回不变");
+	assert(s2.kind === "wait" && s2.label === "awaiting-build", `undelivered task falls back to the requirement status (got ${s2.kind}/${s2.label})`);
+	assert(extractFieldValue("- **Delivery date**: 2026-09-07\n", "Delivery date") === "2026-09-07", "field value extracted");
+	// Empty fields are normal before delivery: the regex must stay on its line, or it swallows the next one
+	// (that bug once made the panel read an awaiting-review doc as delivered)
+	const emptyTpl = "## Basics\n- **Status**: awaiting-review\n- **Module**:\n- **Target directory**: lib/features/finance\n- **Raised on**:\n- **Delivery date**:\n\n## Requirement\nX\n";
+	assert(extractFieldValue(emptyTpl, "Delivery date") === "", "empty field returns an empty string, does not swallow the next line");
+	assert(extractFieldValue(emptyTpl, "Raised on") === "", "empty field does not swallow the following field of the same section");
+	assert(extractFieldValue(emptyTpl, "Module") === "" && extractFieldValue(emptyTpl, "Target directory") === "lib/features/finance", "the field after an empty one still reads correctly");
+	assert(extractFieldValue("- **Delivery date**:\r\n\r\n## Requirement", "Delivery date") === "", "CRLF: empty field stays on its line too");
+	assert(extractFieldValue("- **Status**：awaiting-review\n", "Status") === "awaiting-review", "full-width colon is still read (docs written by the upstream vocabulary)");
+	assert(extractFieldValue("  - **Status**: in-development\n", "Status") === "in-development", "indented sub-item still reads");
+	assert(extractFieldValue("- **Note**: changed *three* spots\n", "Note") === "changed three spots", "emphasis markers inside the value are stripped");
+	assert(extractFieldValue("- **Delivery**: x\n- **Delivery date**: 2026-09-07\n", "Delivery date") === "2026-09-07", "field names that prefix each other do not cross-match");
+	assert(extractFieldValue("- **Status**: awaiting-review\n\n## Defect log\n- **Status**: bugfix-open\n", "Status") === "awaiting-review", "same field name twice: the first wins");
+	const wroteEmpty = setFieldValue(emptyTpl, "Module", "finance");
+	// The templates leave empty fields as "- **Module**:" — writing back must insert the space, or the
+	// ASCII colon glues value and field name together ("- **Module**:finance")
+	assert(wroteEmpty.includes("- **Module**: finance"), "empty field can be written back");
+	assert(setFieldValue("- **Status**：awaiting-review\n", "Status", "approved") === "- **Status**: approved\n", "a full-width colon is normalised to ASCII when written back");
+	assert(setFieldValue("- **Module**:\n", "Module", "a$&b") === "- **Module**: a$&b\n", "a $ in the value is written verbatim, not as a replacement pattern");
+	assert(setFieldValue("- **Module**: finance\n", "Module", "") === "- **Module**:\n", "clearing a field leaves no trailing space");
+	assert(wroteEmpty.includes("- **Target directory**: lib/features/finance"), "writing an empty field does not swallow the next line");
+	const wroteTail = setFieldValue(emptyTpl, "Delivery date", "2026-09-10");
+	assert(wroteTail.includes("- **Delivery date**: 2026-09-10") && wroteTail.includes("## Requirement"), "writing the last empty field keeps the blank line and the heading");
+	assert(setFieldValue(emptyTpl, "Status", "approved").includes("- **Status**: approved"), "a field that already has a value is rewritten");
 	const nested = matchTasks(
-		[{ path: "lib/features/finance/开发需求/2026-09-07-充值.md", content: "- **状态**：待审核\n" }],
+		[{ path: "lib/features/finance/dev-requirements/2026-09-07-topup.md", content: "- **Status**: awaiting-review\n" }],
 		[],
 	);
-	assert(nested.length === 1 && nested[0].slug === "充值" && nested[0].reqPath?.includes("finance/开发需求"), "功能目录下的需求也能配对");
-	assert(taskState({ slug: "a", reqStatus: "调整" }).kind === "wait", "需求调整=wait");
-	assert(taskState({ slug: "a", reqStatus: "已通过" }).kind === "ready", "需求已通过=ready 待开工");
-	assert(isUnderNamedFolder("lib/features/finance/开发需求/a.md", "docs/开发需求") === true, "按目录名识别嵌套需求");
-	assert(targetFolderOf("lib/features/finance/开发需求/a.md", "开发需求") === "lib/features/finance", "目标目录=功能文件夹");
-	assert(setFieldValue("- **状态**：待审核\n", "状态", "已通过").includes("已通过"), "状态字段可写回");
-	assert(upsertSupplementSection("# t\n", "加倒计时", "2026-09-07").includes("## 补充需求"), "调整意见写入补充需求节");
-	assert(upsertBugSection("# t\n", "倒计时未返回", "2026-09-07").includes("## 缺陷记录"), "完成后的缺陷写入原文档缺陷记录");
-	assert(isBugFixReqStatus("已完成") && isBugFixReqStatus("整改中"), "已完成/整改中视为缺陷整改");
-	assert(!isBugFixReqStatus("待审核") && !isBugFixReqStatus("已通过"), "需求阶段不是缺陷整改");
-	assert(shouldUseProjectDocsLayout(["pubspec.yaml", "lib", "docs"]) === true, "Flutter 仓库使用项目开发目录");
-	assert(shouldUseProjectDocsLayout(["人物库", "章节库", "package.json"]) === false, "小说库即使有 package.json 也不改路径");
-	assert(isNovelDefaultDevFolders("开发需求", "开发交付") === true, "识别小说库默认目录名");
-	assert(isNovelDefaultDevFolders("docs/开发需求", "docs/开发交付") === false, "项目 docs 目录不算小说默认");
+	assert(nested.length === 1 && nested[0].slug === "topup" && nested[0].reqPath?.includes("finance/dev-requirements"), "requirements under a feature folder pair up too");
+	assert(taskState({ slug: "a", reqStatus: "adjusting" }).kind === "wait", "requirement adjusting=wait");
+	assert(taskState({ slug: "a", reqStatus: "approved" }).kind === "ready", "requirement approved=ready to start");
+	assert(isUnderNamedFolder("lib/features/finance/dev-requirements/a.md", "docs/dev-requirements") === true, "nested requirements recognised by folder name");
+	assert(targetFolderOf("lib/features/finance/dev-requirements/a.md", "dev-requirements") === "lib/features/finance", "target folder = feature folder");
+	assert(setFieldValue("- **Status**: awaiting-review\n", "Status", "approved").includes("approved"), "status field can be written back");
+	assert(upsertSupplementSection("# t\n", "add a countdown", "2026-09-07").includes("## Supplementary requirements"), "adjustment note goes into the supplementary requirements section");
+	assert(upsertBugSection("# t\n", "countdown never returns", "2026-09-07").includes("## Defect log"), "a bug found after completion goes into the defect log of the original doc");
+	assert(isBugFixReqStatus("completed") && isBugFixReqStatus("bugfix-open"), "completed/bugfix-open count as bug fixing");
+	assert(!isBugFixReqStatus("awaiting-review") && !isBugFixReqStatus("approved"), "the requirement stage is not bug fixing");
+	assert(shouldUseProjectDocsLayout(["pubspec.yaml", "lib", "docs"]) === true, "a Flutter repo uses the project docs layout");
+	assert(shouldUseProjectDocsLayout(["characters", "chapters", "package.json"]) === false, "a novel vault keeps its paths even with a package.json");
+	assert(isNovelDefaultDevFolders("dev-requirements", "dev-deliveries") === true, "novel-vault default folder names recognised");
+	assert(isNovelDefaultDevFolders("docs/dev-requirements", "docs/dev-deliveries") === false, "project docs folders are not the novel defaults");
 }
 
-console.log("\n== 8d. 缺陷统计（防复发回归清单） ==");
+console.log("\n== 8d. Defect counts (regression list against repeats) ==");
 {
-	assert(JSON.stringify(countBugEntries("# t\n")) === '{"total":0,"pending":0}', "没有缺陷记录节=0/0");
-	assert(JSON.stringify(countBugEntries("# t\n\n## 缺陷记录\n")) === '{"total":0,"pending":0}', "空的缺陷记录节=0/0");
-	const fresh = upsertBugSection("# t\n", "倒计时未返回", "2026-09-07");
-	assert(JSON.stringify(countBugEntries(fresh)) === '{"total":1,"pending":1}', "刚记的缺陷（整改未填）=1 条未整改");
-	const fixed = fresh.replace("- **整改**：", "- **整改**：回到金额页\n- **根因**：倒计时回调里没做导航");
-	assert(JSON.stringify(countBugEntries(fixed)) === '{"total":1,"pending":0}', "整改填了内容=已修复");
-	const two = upsertBugSection(fixed, "金额显示旧值", "2026-09-08");
-	assert(JSON.stringify(countBugEntries(two)) === '{"total":2,"pending":1}', "追加第二条后=2 条、1 未整改");
-	const endScoped = "# t\n\n## 缺陷记录\n\n### 2026-09-07\n- a\n- **整改**：x\n\n## 审核意见\n- 无\n";
-	assert(JSON.stringify(countBugEntries(endScoped)) === '{"total":1,"pending":0}', "统计不越过下一节");
+	assert(JSON.stringify(countBugEntries("# t\n")) === '{"total":0,"pending":0}', "no defect log section = 0/0");
+	assert(JSON.stringify(countBugEntries("# t\n\n## Defect log\n")) === '{"total":0,"pending":0}', "empty defect log section = 0/0");
+	const fresh = upsertBugSection("# t\n", "countdown never returns", "2026-09-07");
+	assert(JSON.stringify(countBugEntries(fresh)) === '{"total":1,"pending":1}', "a freshly logged defect (Fix empty) = 1 pending");
+	const fixed = fresh.replace("- **Fix**:", "- **Fix**: back to the amount page\n- **Root cause**: the timer callback never navigated");
+	assert(JSON.stringify(countBugEntries(fixed)) === '{"total":1,"pending":0}', "Fix filled in = fixed");
+	const two = upsertBugSection(fixed, "amount shows the old value", "2026-09-08");
+	assert(JSON.stringify(countBugEntries(two)) === '{"total":2,"pending":1}', "after the second entry = 2 total, 1 pending");
+	const endScoped = "# t\n\n## Defect log\n\n### 2026-09-07\n- a\n- **Fix**: x\n\n## Review notes\n- none\n";
+	assert(JSON.stringify(countBugEntries(endScoped)) === '{"total":1,"pending":0}', "counting stops at the next section");
 	const tasks = collectDevTasks(
-		[{ path: "docs/开发文档/finance/2026-09-07-充值.md", content: "- **状态**：整改中\n" + two }],
+		[{ path: "docs/dev-docs/finance/2026-09-07-topup.md", content: "- **Status**: bugfix-open\n" + two }],
 		[],
 		[],
-		"开发文档",
+		"dev-docs",
 	);
-	assert(tasks[0].bugTotal === 2 && tasks[0].bugPending === 1, "统一文档任务带缺陷统计（2 条/1 未整改）");
-	// 「整改」「落实」留空但条目下方还有文字时，曾因 \s 跨行被误判为已完成（→ 面板漏掉缺陷、变更被当成已落地）
-	const trailingNote = "# t\n\n## 缺陷记录\n\n### 2026-09-07 15:00\n- 文案漏了一处\n- **整改**：\n- 备注：作者补了说明但还没修\n";
-	assert(JSON.stringify(countBugEntries(trailingNote)) === '{"total":1,"pending":1}', "整改留空且下方有文字=仍未整改");
-	const trailingFixed = trailingNote.replace("- **整改**：", "- **整改**：回到金额页");
-	assert(JSON.stringify(countBugEntries(trailingFixed)) === '{"total":1,"pending":0}', "整改填了内容=已修复（下方有文字不受影响）");
-	const pendingNote = "# t\n\n## 需求变更\n\n### 2026-09-07 15:00\n- 改文案\n- **落实**：\n- 备注：还没落地\n";
-	assert(hasPendingChange(pendingNote) === true, "落实留空且下方有文字=变更未落地");
-	assert(hasPendingChange(pendingNote.replace("- **落实**：", "- **落实**：改完了")) === false, "落实填了内容=变更已落地");
+	assert(tasks[0].bugTotal === 2 && tasks[0].bugPending === 1, "unified doc task carries the defect counts (2 total / 1 pending)");
+	// "Fix"/"Landed" empty but more text below the entry: \s used to match across the line break
+	// (→ the panel lost defects and treated changes as landed)
+	const trailingNote = "# t\n\n## Defect log\n\n### 2026-09-07 15:00\n- one string was missed\n- **Fix**:\n- note: the author explained it but has not fixed it\n";
+	assert(JSON.stringify(countBugEntries(trailingNote)) === '{"total":1,"pending":1}', "Fix empty with text below = still pending");
+	const trailingFixed = trailingNote.replace("- **Fix**:", "- **Fix**: back to the amount page");
+	assert(JSON.stringify(countBugEntries(trailingFixed)) === '{"total":1,"pending":0}', "Fix filled in = fixed (text below does not matter)");
+	const pendingNote = "# t\n\n## Requirement changes\n\n### 2026-09-07 15:00\n- reword it\n- **Landed**:\n- note: not in the code yet\n";
+	assert(hasPendingChange(pendingNote) === true, "Landed empty with text below = change not landed");
+	assert(hasPendingChange(pendingNote.replace("- **Landed**:", "- **Landed**: done")) === false, "Landed filled in = change landed");
 }
 
-console.log("\n== 8b. 嵌套目录审核范围 ==");
+console.log("\n== 8b. Review scope in nested folders ==");
 {
-	assert(matchingFolderPrefix("lib/features/finance/开发需求/a.md", ["docs/开发需求", "docs/开发交付"]) === "docs/开发需求", "按目录名匹配功能下的开发需求");
-	assert(isInScope("lib/features/finance/开发需求/2026-09-07-充值.md", ["开发需求", "开发交付"], []) === true, "嵌套需求文件属于审核范围");
-	assert(isInScope("docs/开发需求/需求模板.md", ["docs/开发需求"], []) === false, "模板文件仍跳过");
-	assert(isInScope("lib/main.dart.md", ["docs/开发需求"], []) === false, "代码目录不在审核范围");
-	assert(isTemplateLike("docs/开发文档/finance/_模块.md") === true, "模块卡不算审核对象");
-	assert(isInScope("docs/开发文档/finance/_模块.md", ["开发文档"], []) === false, "模块卡不在审核范围");
-	assert(isInScope("docs/开发文档/finance/2026-09-07-充值.md", ["开发文档", "开发需求"], []) === true, "统一开发文档属于审核范围");
-	assert(matchingFolderPrefix("docs/开发文档/finance/a.md", ["开发文档"]) === "开发文档", "按目录名匹配开发文档");
-	assert(targetFolderOf("docs/开发文档/finance/a.md", "开发文档") === "docs/开发文档/finance", "docs 下按模块分子文件夹");
-	assert(isInScope("docs/开发文档/finance/2026-09-07-充值.md", ["docs/开发文档"], []) === true, "docs/开发文档 前缀也在范围内");
+	assert(matchingFolderPrefix("lib/features/finance/dev-requirements/a.md", ["docs/dev-requirements", "docs/dev-deliveries"]) === "docs/dev-requirements", "dev-requirements under a feature matched by folder name");
+	assert(isInScope("lib/features/finance/dev-requirements/2026-09-07-topup.md", ["dev-requirements", "dev-deliveries"], []) === true, "nested requirement file is in review scope");
+	assert(isInScope("docs/dev-requirements/requirements-template.md", ["docs/dev-requirements"], []) === false, "template files are still skipped");
+	assert(isInScope("lib/main.dart.md", ["docs/dev-requirements"], []) === false, "code folders are out of scope");
+	assert(isTemplateLike("docs/dev-docs/finance/_module.md") === true, "a module card is not a review object");
+	assert(isInScope("docs/dev-docs/finance/_module.md", ["dev-docs"], []) === false, "module card out of scope");
+	assert(isInScope("docs/dev-docs/finance/2026-09-07-topup.md", ["dev-docs", "dev-requirements"], []) === true, "unified dev doc is in scope");
+	assert(matchingFolderPrefix("docs/dev-docs/finance/a.md", ["dev-docs"]) === "dev-docs", "dev-docs matched by folder name");
+	assert(targetFolderOf("docs/dev-docs/finance/a.md", "dev-docs") === "docs/dev-docs/finance", "under docs/ the module subfolder wins");
+	assert(isInScope("docs/dev-docs/finance/2026-09-07-topup.md", ["docs/dev-docs"], []) === true, "the docs/dev-docs prefix is in scope as well");
 }
 
-console.log("\n== 8c. 统一开发文档 ==");
+console.log("\n== 8c. Unified dev docs ==");
 {
 	const docs = [
 		{
-			path: "docs/开发文档/finance/2026-09-07-充值.md",
-			content: "- **状态**：待审核\n- **目标目录**：lib/features/finance\n",
+			path: "docs/dev-docs/finance/2026-09-07-topup.md",
+			content: "- **Status**: awaiting-review\n- **Target directory**: lib/features/finance\n",
 		},
 		{
-			path: "docs/开发文档/finance/_模块.md",
-			content: "# 模块：finance\n",
+			path: "docs/dev-docs/finance/_module.md",
+			content: "# Module: finance\n",
 		},
 	];
 	const legacy = collectDevTasks(
 		docs,
-		[{ path: "lib/features/auth/开发需求/2026-09-01-登录.md", content: "- **状态**：已通过\n" }],
-		[{ path: "lib/features/auth/开发交付/2026-09-01-登录.md", content: "- **状态**：已交付\n- **交付日期**：2026-09-01\n" }],
-		"开发文档",
+		[{ path: "lib/features/auth/dev-requirements/2026-09-01-login.md", content: "- **Status**: approved\n" }],
+		[{ path: "lib/features/auth/dev-deliveries/2026-09-01-login.md", content: "- **Status**: delivered\n- **Delivery date**: 2026-09-01\n" }],
+		"dev-docs",
 	);
-	assert(legacy.length === 2, `统一+旧档任务数 ${legacy.length}`);
-	const pay = legacy.find((x) => x.slug === "充值");
-	assert(!!pay && pay.unified === true && pay.reqPath?.includes("docs/开发文档/finance"), "充值走统一开发文档");
-	assert(pay?.targetFolder === "docs/开发文档/finance", "面板按 docs 模块文件夹分组");
-	assert(pay?.codeTarget === "lib/features/finance", "目标目录仍指向代码");
-	assert(taskState(pay).kind === "wait" && taskState(pay).label === "待审核", "统一文档待审核=wait");
-	assert(taskState({ slug: "a", reqStatus: "已交付" }).kind === "wait", "统一文档已交付=wait 等审交付");
-	assert(taskState({ slug: "a", reqStatus: "已完成" }).kind === "final", "统一文档已完成=final");
-	assert(taskState({ slug: "a", reqStatus: "完结" }).kind === "final", "统一文档完结=final");
-	assert(taskState({ slug: "a", reqStatus: "开发中" }).kind === "active", "统一文档开发中=active");
-	assert(taskState({ slug: "a", reqStatus: "变更中" }).kind === "wait", "需求变更中=wait");
-	assert(taskState({ slug: "a", reqStatus: "调整中" }).kind === "wait", "调整中=wait 等改文档");
-	assert(taskState({ slug: "a", reqStatus: "整改中" }).kind === "active", "添加BUG 整改中=active 不走终态");
-	assert(nextApproveStatus("待审核") === "已通过", "待审核点通过=已通过");
-	assert(nextApproveStatus("开发中") === "完结", "开发中点完结=完结");
-	assert(nextApproveStatus("已交付") === "完结", "已交付点完结=完结");
-	assert(nextApproveStatus("变更中") === "完结", "变更中点完结=完结");
-assert(nextApproveStatus("调整中", true) === "变更中", "对过代码的调整中点定稿=变更中（hasPendingChange 也算代码期）");
-assert(nextApproveStatus("已通过") === "已通过", "已通过再点通过仍是已通过");
-assert(nextApproveStatus("调整", true) === "变更中", "交付后状态被改成调整：定稿进入变更中，不直接完结");
-	assert(isApprovedReqStatus("已通过") && !isApprovedReqStatus("完结") && !isApprovedReqStatus("开发中"), "开工只认已通过");
-	assert(!canRecordRequirementChange("待审核") && !canRecordRequirementChange("调整") && !canRecordRequirementChange("已通过"), "需求阶段（含已通过）不用需求变更，改需求走调整");
-	assert(canRecordRequirementChange("开发中") && canRecordRequirementChange("已交付") && canRecordRequirementChange("完结") && canRecordRequirementChange("变更中"), "对过代码以后才可需求变更（代码落地）");
+	assert(legacy.length === 2, `unified + legacy tasks: ${legacy.length}`);
+	const pay = legacy.find((x) => x.slug === "topup");
+	assert(!!pay && pay.unified === true && pay.reqPath?.includes("docs/dev-docs/finance"), "topup runs through the unified dev doc");
+	assert(pay?.targetFolder === "docs/dev-docs/finance", "panel groups by the docs module folder");
+	assert(pay?.codeTarget === "lib/features/finance", "target directory still points at the code");
+	assert(taskState(pay).kind === "wait" && taskState(pay).label === "awaiting-review", "unified doc awaiting-review=wait");
+	assert(taskState({ slug: "a", reqStatus: "delivered" }).kind === "wait", "unified doc delivered=wait for the delivery review");
+	assert(taskState({ slug: "a", reqStatus: "completed" }).kind === "final", "unified doc completed=final");
+	assert(taskState({ slug: "a", reqStatus: "closed" }).kind === "final", "unified doc closed=final");
+	assert(taskState({ slug: "a", reqStatus: "in-development" }).kind === "active", "unified doc in-development=active");
+	assert(taskState({ slug: "a", reqStatus: "change-open" }).kind === "wait", "change-open=wait");
+	// Upstream had two statuses here (调整 / 调整中); the fork merged both into "adjusting"
+	assert(taskState({ slug: "a", reqStatus: "adjusting" }).kind === "wait", "adjusting=wait for the doc rewrite");
+	assert(taskState({ slug: "a", reqStatus: "bugfix-open" }).kind === "active", "logged bug: bugfix-open=active, not a final state");
+	assert(nextApproveStatus("awaiting-review") === "approved", "awaiting-review + Approve = approved");
+	assert(nextApproveStatus("in-development") === "closed", "in-development + Close = closed");
+	assert(nextApproveStatus("delivered") === "closed", "delivered + Close = closed");
+	assert(nextApproveStatus("change-open") === "closed", "change-open + Close = closed");
+	assert(nextApproveStatus("adjusting", true) === "change-open", "adjusting after code + Finalize = change-open (hasPendingChange counts as code phase)");
+	assert(nextApproveStatus("approved") === "approved", "approving an approved requirement again stays approved");
+	assert(isApprovedReqStatus("approved") && !isApprovedReqStatus("closed") && !isApprovedReqStatus("in-development"), "only approved may start");
+	assert(!canRecordRequirementChange("awaiting-review") && !canRecordRequirementChange("adjusting") && !canRecordRequirementChange("approved"), "the requirement stage (approved included) uses Adjust, not Change req");
+	assert(canRecordRequirementChange("in-development") && canRecordRequirementChange("delivered") && canRecordRequirementChange("closed") && canRecordRequirementChange("change-open"), "requirement changes only once code exists (they land in code)");
 	{
-	const pending = devAuthorActions("待审核");
-	assert(pending.approve === "pass" && pending.adjust && !pending.bug && !pending.change, "待审核：通过+调整，无缺陷无变更");
-	const settling = devAuthorActions("调整中", true);
-	assert(settling.approve === "settle" && settling.bug && settling.change && !settling.adjust, "对过代码的调整中：定稿+缺陷+需求变更，不能直接完结");
-	const reqAdjusting = devAuthorActions("调整中");
-	assert(reqAdjusting.approve === "pass" && reqAdjusting.adjust && !reqAdjusting.bug && !reqAdjusting.change, "需求阶段调整中：通过+调整");
-	const approved = devAuthorActions("已通过");
-		assert(approved.approve === "pass" && approved.adjust && !approved.bug && !approved.change, "已通过：通过+调整（改需求走调整重新生成文档）");
-		const delivered = devAuthorActions("已交付");
-		assert(delivered.approve === "done" && delivered.bug && delivered.change && !delivered.adjust, "已交付：完结+缺陷+需求变更（调整只在需求阶段）");
-		const closed = devAuthorActions("完结");
-		assert(closed.approve === "done" && closed.bug && closed.change && !closed.adjust, "完结后仍可写缺陷和需求变更（落地）");
-		const developing = devAuthorActions("开发中");
-		assert(developing.approve === "done" && developing.bug && developing.change && !developing.adjust, "开发中可写缺陷和需求变更");
-		assert(canRecordBug("已交付") && canRecordBug("完结") && !canRecordBug("待审核") && !canRecordBug("已通过"), "缺陷按钮只在开工之后");
-		assert(canRecordBug("调整", true) && !canRecordBug("调整"), "交付后即使状态变成调整仍可写缺陷");
+		const pending = devAuthorActions("awaiting-review");
+		assert(pending.approve === "pass" && pending.adjust && !pending.bug && !pending.change, "awaiting-review: Approve + Adjust, no Bug, no Change req");
+		const settling = devAuthorActions("adjusting", true);
+		assert(settling.approve === "settle" && settling.bug && settling.change && !settling.adjust, "adjusting after code: Finalize + Bug + Change req, no direct Close");
+		const reqAdjusting = devAuthorActions("adjusting");
+		assert(reqAdjusting.approve === "pass" && reqAdjusting.adjust && !reqAdjusting.bug && !reqAdjusting.change, "adjusting during requirements: Approve + Adjust");
+		const approved = devAuthorActions("approved");
+		assert(approved.approve === "pass" && approved.adjust && !approved.bug && !approved.change, "approved: Approve + Adjust (requirement edits regenerate the doc via Adjust)");
+		const delivered = devAuthorActions("delivered");
+		assert(delivered.approve === "done" && delivered.bug && delivered.change && !delivered.adjust, "delivered: Close + Bug + Change req (Adjust is requirement-stage only)");
+		const closed = devAuthorActions("closed");
+		assert(closed.approve === "done" && closed.bug && closed.change && !closed.adjust, "after closing, bugs and requirement changes are still possible (they land)");
+		const developing = devAuthorActions("in-development");
+		assert(developing.approve === "done" && developing.bug && developing.change && !developing.adjust, "in-development allows bugs and requirement changes");
+		assert(canRecordBug("delivered") && canRecordBug("closed") && !canRecordBug("awaiting-review") && !canRecordBug("approved"), "the Bug button only appears once work started");
+		assert(canRecordBug("adjusting", true) && !canRecordBug("adjusting"), "after delivery, a doc set back to adjusting still accepts bugs");
 	}
-	assert(upsertChangeSection("# t\n", "快捷档位只要三档", "2026-09-07").includes("## 需求变更"), "需求变更写入原文档");
+	assert(upsertChangeSection("# t\n", "only three quick amounts", "2026-09-07").includes("## Requirement changes"), "requirement change written into the original doc");
 	{
-		const fresh = upsertChangeSection("# t\n", "快捷档位只要三档", "2026-09-07");
-		assert(hasPendingChange(fresh), "刚记的变更（落实未填）= 未落地");
-		const landed = fresh.replace("- **落实**：", "- **落实**：已改金额页，只留三档");
-		assert(!hasPendingChange(landed), "落实填了内容 = 已落地");
-		assert(!hasPendingChange("# t\n\n## 需求变更\n\n## 缺陷记录\n"), "空的需求变更节不算未落地");
-		assert(!hasPendingChange("# t\n"), "没有需求变更节不算未落地");
-		const twoPending = upsertChangeSection(fresh, "再加一档 2000", "2026-09-08 09:30");
-		assert(hasPendingChange(twoPending), "追加第二条变更（未落实）仍是调整中");
+		const fresh = upsertChangeSection("# t\n", "only three quick amounts", "2026-09-07");
+		assert(hasPendingChange(fresh), "a freshly logged change (Landed empty) = not landed");
+		const landed = fresh.replace("- **Landed**:", "- **Landed**: amount page now shows three steps");
+		assert(!hasPendingChange(landed), "Landed filled in = landed");
+		assert(!hasPendingChange("# t\n\n## Requirement changes\n\n## Defect log\n"), "an empty requirement changes section is not pending");
+		assert(!hasPendingChange("# t\n"), "no requirement changes section is not pending");
+		const twoPending = upsertChangeSection(fresh, "add a 2000 step", "2026-09-08 09:30");
+		assert(hasPendingChange(twoPending), "a second unlanded change keeps the doc adjusting");
 	}
 	{
-		assert(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(nowStamp(new Date(2026, 8, 8, 9, 5))), "条目时间戳精确到分钟");
-		assert(nowStamp(new Date(2026, 8, 8, 9, 5)) === "2026-09-08 09:05", "分钟补零");
-		// upsert 插在节标题后第一条 → 节内顺序：最新在前
-		const base = "# 开发文档\n\n## 需求变更\n\n### 2026-09-08 09:30\n- 新变更\n- **落实**：\n\n### 2026-09-07 10:00\n- 旧变更\n- **落实**：\n\n## 缺陷记录\n";
-		const r1 = removeLatestSectionEntry(base, "## 需求变更");
-		assert(r1.removed.includes("2026-09-08 09:30") && r1.removed.includes("新变更"), "撤回删除的是最新一条（节标题后第一条）");
-		assert(r1.content.includes("2026-09-07 10:00") && !r1.content.includes("新变更"), "旧条目保留、新条目移除");
-		assert(r1.content.includes("## 缺陷记录"), "后续节不受影响");
-		const r2 = removeLatestSectionEntry(r1.content, "## 需求变更");
-		assert(r2.removed.includes("2026-09-07 10:00"), "连续撤回能删到更早一条");
-		const r3 = removeLatestSectionEntry(r2.content, "## 需求变更");
-		assert(!r3.removed, "节里没条目时不改动");
-		// 新条目插在标题下会把归档指针挤到条目后：撤回只删条目、不吞指针行
-		const withPointer = "# t\n\n## 需求变更\n\n### 2026-09-09 09:00\n- 新变更\n- **落实**：\n\n> 已完成条目归档：[[x-归档]]\n\n## 缺陷记录\n";
-		const r5 = removeLatestSectionEntry(withPointer, "## 需求变更");
-		assert(r5.removed.includes("2026-09-09 09:00") && !r5.removed.includes("已完成条目归档"), "撤回删条目不吞归档指针行");
-		assert(r5.content.includes("> 已完成条目归档：[[x-归档]]"), "指针行保留在节内");
-		const r6 = removeLatestSectionEntry(r5.content, "## 需求变更");
-		assert(!r6.removed && r6.content.includes("> 已完成条目归档：[[x-归档]]"), "只剩指针时撤回不改动");
-		const supp = "# t\n\n## 补充需求\n- （2026-09-08 10:00）新要求\n- （2026-09-07 09:00）旧要求\n";
-		const r4 = removeLatestSectionEntry(supp, "## 补充需求");
-		assert(r4.removed.includes("2026-09-08 10:00") && r4.content.includes("旧要求"), "补充需求撤回删最新一条");
+		assert(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(nowStamp(new Date(2026, 8, 8, 9, 5))), "entry timestamps are minute-precise");
+		assert(nowStamp(new Date(2026, 8, 8, 9, 5)) === "2026-09-08 09:05", "minutes are zero-padded");
+		assert(/^\d{4}-\d{2}-\d{2}$/.test(todayStamp(new Date(2026, 8, 8))), "day stamp is ISO");
+		// upsert inserts right after the heading → newest entry first inside the section
+		const base = "# Dev doc\n\n## Requirement changes\n\n### 2026-09-08 09:30\n- new change\n- **Landed**:\n\n### 2026-09-07 10:00\n- old change\n- **Landed**:\n\n## Defect log\n";
+		const r1 = removeLatestSectionEntry(base, "## Requirement changes");
+		assert(r1.removed.includes("2026-09-08 09:30") && r1.removed.includes("new change"), "undo removes the newest entry (the first one after the heading)");
+		assert(r1.content.includes("2026-09-07 10:00") && !r1.content.includes("new change"), "the older entry stays, the new one is gone");
+		assert(r1.content.includes("## Defect log"), "following sections are untouched");
+		const r2 = removeLatestSectionEntry(r1.content, "## Requirement changes");
+		assert(r2.removed.includes("2026-09-07 10:00"), "undoing again reaches the earlier entry");
+		const r3 = removeLatestSectionEntry(r2.content, "## Requirement changes");
+		assert(!r3.removed, "nothing changes when the section has no entries");
+		// A new entry under the heading pushes the archive pointer behind it: undo removes only the entry
+		const withPointer = "# t\n\n## Requirement changes\n\n### 2026-09-09 09:00\n- new change\n- **Landed**:\n\n> Completed entries archived: [[x-archive]]\n\n## Defect log\n";
+		const r5 = removeLatestSectionEntry(withPointer, "## Requirement changes");
+		assert(r5.removed.includes("2026-09-09 09:00") && !r5.removed.includes("Completed entries archived"), "undo removes the entry without swallowing the archive pointer line");
+		assert(r5.content.includes("> Completed entries archived: [[x-archive]]"), "the pointer line stays inside the section");
+		const r6 = removeLatestSectionEntry(r5.content, "## Requirement changes");
+		assert(!r6.removed && r6.content.includes("> Completed entries archived: [[x-archive]]"), "with only the pointer left, undo changes nothing");
+		const supp = "# t\n\n## Supplementary requirements\n- (2026-09-08 10:00) new wish\n- (2026-09-07 09:00) old wish\n";
+		const r4 = removeLatestSectionEntry(supp, "## Supplementary requirements");
+		assert(r4.removed.includes("2026-09-08 10:00") && r4.content.includes("old wish"), "supplementary requirements: undo removes the newest line");
 	}
-	assert(!legacy.some((x) => x.slug === "_模块" || x.slug === "模块"), "模块卡不进入任务列表");
-	const login = legacy.find((x) => x.slug === "登录");
-	assert(!!login && !login.unified && login.deliverPath?.includes("开发交付"), "未合并的旧需求/交付仍配对");
+	assert(!legacy.some((x) => x.slug === "_module" || x.slug === "module"), "module cards never become tasks");
+	const login = legacy.find((x) => x.slug === "login");
+	assert(!!login && !login.unified && login.deliverPath?.includes("dev-deliveries"), "unmerged legacy requirement/delivery pairs still pair");
 }
 
-console.log("\n== 9. 模拟审核结果（真实 vault 全量规则检查）==");
-const scanFolders = ["人物库", "事件库", "技能库", "章节库", "大道库", "世界观"];
-const scanRoot = ["大纲.md", "世界观.md"];
+console.log("\n== 9. Simulated review result (full rule check over the fixture vault) ==");
+const scanFolders = ["characters", "events", "skills", "chapters", "principles", "worldview"];
+const scanRoot = ["outline.md", "worldview.md"];
 const counts = { pass: 0, warn: 0, fail: 0 };
 const perFile = [];
 for (const p of allPaths) {
 	if (!isInScope(p, scanFolders, scanRoot)) continue;
 	const content = readFileSync(join(vaultRoot, p), "utf8");
-	const res = checkFile(p, content, allPaths, ctx, p === "世界观.md");
+	const res = checkFile(p, content, allPaths, ctx, p === "worldview.md");
 	counts[res.status] = (counts[res.status] ?? 0) + 1;
 	perFile.push(res);
 }
-perFile.sort((a, b) => ({ fail: 0, warn: 1, pass: 2 })[a.status] - ({ fail: 0, warn: 1, pass: 2 })[b.status] || a.path.localeCompare(b.path, "zh-Hans-CN"));
+perFile.sort((a, b) => ({ fail: 0, warn: 1, pass: 2 })[a.status] - ({ fail: 0, warn: 1, pass: 2 })[b.status] || a.path.localeCompare(b.path));
 for (const r of perFile) {
 	const icon = r.status === "pass" ? "✅" : r.status === "warn" ? "⚠️" : "❌";
-	console.log(`  ${icon} ${r.path}（${r.issues.length} 个问题）`);
+	console.log(`  ${icon} ${r.path} (${r.issues.length} issues)`);
 }
-console.log(`\n  汇总：通过 ${counts.pass} / 需整改 ${counts.warn} / 未通过 ${counts.fail ?? 0}`);
-assert(perFile.length > 30, `共审核 ${perFile.length} 个文件（>30）`);
+console.log(`\n  summary: pass ${counts.pass} / needs work ${counts.warn} / failed ${counts.fail ?? 0}`);
+assert(perFile.length > 30, `${perFile.length} files reviewed (>30)`);
+assert(counts.pass > 0 && counts.warn > 0, `fixture produces both clean and flagged files (${counts.pass} pass / ${counts.warn} warn)`);
 
-console.log(failed === 0 ? "\n全部断言通过 ✅" : `\n${failed} 条断言失败 ❌`);
+console.log("\n== 10. Store: verdicts, history vocabulary, Issues-only filter ==");
+{
+	const store = new ReviewStore(null);
+	store.applyRuleResult("a.md", "warn", [{ id: "x", source: "rule", dimension: "draft", severity: "warn", problem: "p" }]);
+	// The action strings land in data.json, so they are stored values, not UI text
+	assert(store.data.files["a.md"].history.at(-1).action === "rule-check", 'rule check logs "rule-check"');
+	store.applyAiReport("a.md", "pass", [], "fine", "hash-1", 1);
+	assert(store.data.files["a.md"].history.at(-1).action === "ai-report-imported", 'report import logs "ai-report-imported"');
+	store.applyUserVerdict("a.md", "pass");
+	assert(store.data.files["a.md"].history.at(-1).action === "user-approved", 'Approve logs "user-approved"');
+	assert(effectiveStatus(store.data.files["a.md"]).origin === "user", "a user verdict outranks rule and AI verdicts");
+	store.applyUserVerdict("a.md", undefined, undefined, "superseded by a newer AI report");
+	const cleared = store.data.files["a.md"].history.at(-1);
+	assert(cleared.action === "user-verdict-cleared" && cleared.detail === "superseded by a newer AI report", 'clearing logs "user-verdict-cleared" with its reason');
+	store.applyUserVerdict("a.md", "fail", "unify the age");
+	assert(store.data.files["a.md"].history.at(-1).action === "user-adjustment-requested", 'Adjust logs "user-adjustment-requested"');
+	assert(store.data.files["a.md"].userNote === "unify the age", "the adjust note is kept (it feeds the fix prompt)");
+	store.applyFixApplied("a.md");
+	const fr = store.data.files["a.md"];
+	assert(fr.history.at(-1).action === "proposal-applied", 'applying a proposal logs "proposal-applied"');
+	assert(fr.fixedCount === 1 && fr.ruleStatus === "unchecked" && fr.userVerdict === undefined, "after the replacement: round counted, status reset, verdict cleared");
+
+	// Behaviour change 2 of the fork: a proposal keeps the file listed under "Issues only"
+	const passed = { path: "p.md", ruleStatus: "pass", ruleIssues: [], aiIssues: [], fixedCount: 0, history: [], userVerdict: "pass" };
+	assert(needsAttention(passed, false) === false, "a passing file without a proposal is hidden under Issues only");
+	assert(needsAttention(passed, true) === true, "a passing file with a proposal stays visible under Issues only");
+	assert(needsAttention({ ...passed, userVerdict: undefined, ruleStatus: "warn" }, false) === true, "a warning file stays visible");
+	assert(needsAttention(undefined, false) === true, "an unchecked file stays visible");
+
+	const sorted = store.sortedPaths(["b.md", "a.md"]);
+	assert(sorted[0] === "a.md" && sorted[1] === "b.md", "sorting by path needs no locale");
+}
+
+console.log(failed === 0 ? "\nall assertions passed ✅" : `\n${failed} assertions failed ❌`);
 process.exit(failed === 0 ? 0 : 1);

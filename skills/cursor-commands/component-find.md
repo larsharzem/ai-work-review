@@ -2,10 +2,10 @@
 description: 组件查 · Component find — recommend which existing component to reuse (<need description>)
 ---
 
-**Selection, tag-first**: extract capability/scenario keywords from the need → narrow candidates by `#能力/…` `#场景/…` tags → decide via responsibility & example → recommend with minimal usage；say plainly when nothing fits and ask about creating one (register with `组件登记` at delivery). Run this before writing UI；you can also global-search the tags in Obsidian.
+**Selection, tag-first**: extract capability/scenario keywords from the need → narrow candidates by `#capability/…` `#scenario/…` tags → decide via responsibility & example → recommend with minimal usage；say plainly when nothing fits and ask about creating one (register with `组件登记` at delivery). Run this before writing UI；you can also global-search the tags in Obsidian.
 
 先加载并遵守技能 dev-review 的 SKILL.md：优先项目级 `.cursor/skills/dev-review/SKILL.md`（ZCode 为 `.zcode/skills/`），没有则读用户级 `~/.cursor/skills/dev-review/SKILL.md`（ZCode 为 `~/.zcode/skills/`）。
 
 执行 dev-review 的子命令「组件」，动作 `查` / Run dev-review subcommand `组件` action `查`, args: $ARGUMENTS
 
-按技能执行，不要往仓库写模板文件。开发文档固定写在 `docs/开发文档/<模块>/`。
+按技能执行，不要往仓库写模板文件。开发文档固定写在 `docs/dev-docs/<module>/`。

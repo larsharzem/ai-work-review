@@ -47,26 +47,26 @@ export function parseAiReport(raw: string): { report?: ParsedAiReport; error?: s
 	try {
 		obj = JSON.parse(raw);
 	} catch (e) {
-		return { error: `JSON 解析失败：${(e as Error).message}` };
+		return { error: `Invalid JSON: ${(e as Error).message}` };
 	}
-	if (typeof obj !== "object" || obj === null) return { error: "报告根节点不是对象" };
+	if (typeof obj !== "object" || obj === null) return { error: "Report root is not an object" };
 	const o = obj as Record<string, unknown>;
 	const file = typeof o.file === "string" ? o.file.trim() : "";
-	if (!file) return { error: "缺少必填字段 file（vault 相对路径）" };
+	if (!file) return { error: "Missing required field: file (vault-relative path)" };
 	const verdict = o.verdict;
 	if (verdict !== "pass" && verdict !== "warn" && verdict !== "fail") {
-		return { error: `verdict 非法：${String(verdict)}（应为 pass/warn/fail）` };
+		return { error: `Invalid verdict: ${String(verdict)} (expected pass/warn/fail)` };
 	}
 	const issues: ParsedAiIssue[] = [];
 	if (o.issues !== undefined) {
-		if (!Array.isArray(o.issues)) return { error: "issues 应为数组" };
+		if (!Array.isArray(o.issues)) return { error: "issues must be an array" };
 		for (const rawIssue of o.issues as unknown[]) {
 			if (typeof rawIssue !== "object" || rawIssue === null || typeof (rawIssue as Record<string, unknown>).problem !== "string") {
-				return { error: "issues 中存在缺少 problem 的条目" };
+				return { error: "An entry in issues has no problem text" };
 			}
 			const it = rawIssue as Record<string, unknown>;
 			const problem = it.problem as string;
-			if (!problem.trim()) return { error: "issues 中存在缺少 problem 的条目" };
+			if (!problem.trim()) return { error: "An entry in issues has no problem text" };
 			const sev = it.severity === "error" || it.severity === "info" ? it.severity : "warn";
 			issues.push({
 				severity: sev,
