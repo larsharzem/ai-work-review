@@ -34,10 +34,11 @@ jobs:
 
       - run: npm ci
 
+      # Typecheck + bundle first: the integration test loads main.js, which is gitignored
+      - run: npm run build:only
+
       # The suite builds its own fixture vault, so it runs anywhere
       - run: npm test
-
-      - run: npm run build:only
 
       - name: Tag must match manifest.json
         run: |

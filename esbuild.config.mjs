@@ -74,6 +74,15 @@ if (mode === "test") {
 		outfile: ".test/dev.mjs",
 		logLevel: "silent",
 	});
+	// test/integration.mjs loads the real plugin bundle, so build it here too (same
+	// output as `production`, so a later install:vault can't ship a test build)
+	await esbuild.build({
+		...common,
+		sourcemap: false,
+		conditions: ["browser"],
+		outfile: "main.js",
+		logLevel: "silent",
+	});
 } else {
 	const context = await esbuild.context({
 		...common,
